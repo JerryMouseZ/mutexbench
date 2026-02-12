@@ -37,13 +37,13 @@ EOF
 }
 
 binary="./mutex_bench"
-threads_csv="1,2,4,8,16"
-critical_iters_csv="10,50,100,200,500"
-outside_iters_csv="10,50,100,200,500"
+threads_csv="1,2,4,8,16,32,64"
+critical_iters_csv="10,50,100,200,500,1000,2000"
+outside_iters_csv="10,50,100,200,500,1000,2000"
 iterations="200000"
-warmup_iterations="20000"
+warmup_iterations="50000"
 timing_sample_stride="8"
-repeats="3"
+repeats="5"
 output_raw="throughput_sweep_raw.csv"
 output_summary="throughput_sweep_summary.csv"
 

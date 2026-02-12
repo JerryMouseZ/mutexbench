@@ -131,6 +131,9 @@ int main(int argc, char* argv[]) {
   std::atomic<uint64_t> total_waiters_before_lock{0};
   std::atomic<int> warmup_done{0};
   std::atomic<bool> measure_start{false};
+  // Protected by mu; tracks the unlock timestamp of the previous lock owner.
+  uint64_t global_last_before_unlock = 0;
+  bool has_global_last_before_unlock = false;
 
   std::vector<std::thread> workers;
   workers.reserve(static_cast<size_t>(cfg.threads));
@@ -160,8 +163,6 @@ int main(int argc, char* argv[]) {
       while (!measure_start.load(std::memory_order_acquire)) {
       }
 
-      uint64_t last_before_unlock = 0;
-      bool has_last_before_unlock = false;
       uint64_t sample_countdown =
           static_cast<uint64_t>(thread_index) % cfg.timing_sample_stride;
 
@@ -177,19 +178,27 @@ int main(int argc, char* argv[]) {
         }
         uint64_t after_lock = 0;
         uint64_t before_unlock = 0;
+        uint64_t prev_global_before_unlock = 0;
+        bool has_prev_global_before_unlock = false;
         {
           std::lock_guard<std::mutex> lock(mu);
           if (do_timing_sample) {
             after_lock = ReadTsc();
+            if (has_global_last_before_unlock) {
+              prev_global_before_unlock = global_last_before_unlock;
+              has_prev_global_before_unlock = true;
+            }
           }
           BurnIters(cfg.critical_iters);
           ++protected_counter;
           before_unlock = ReadTsc();
+          global_last_before_unlock = before_unlock;
+          has_global_last_before_unlock = true;
         }
         lock_waiters.fetch_sub(1, std::memory_order_relaxed);
         if (do_timing_sample) {
-          if (has_last_before_unlock && after_lock >= last_before_unlock) {
-            const uint64_t delta_cycles = (after_lock - last_before_unlock);
+          if (has_prev_global_before_unlock && after_lock >= prev_global_before_unlock) {
+            const uint64_t delta_cycles = (after_lock - prev_global_before_unlock);
             if (waiters_before_lock == 0) {
               local_unlock_to_next_lock_cycles_w0 += delta_cycles;
               ++local_unlock_to_next_lock_samples_w0;
@@ -203,8 +212,6 @@ int main(int argc, char* argv[]) {
             ++local_lock_hold_samples;
           }
         }
-        last_before_unlock = before_unlock;
-        has_last_before_unlock = true;
         BurnIters(cfg.outside_iters);
         ++local_ops;
       }
