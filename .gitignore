@@ -1,0 +1,20 @@
+# Build outputs
+mutex_bench
+curve_bench
+*.o
+*.obj
+*.out
+
+*.csv
+
+# Dependency files
+*.d
+
+# Common C/C++ tool artifacts
+*.gcno
+*.gcda
+*.gcov
+
+# Editors / OS
+.DS_Store
+Thumbs.db
