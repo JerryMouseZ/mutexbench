@@ -175,7 +175,7 @@ mkdir -p "$(dirname "$output_raw")"
 mkdir -p "$(dirname "$output_summary")"
 
 printf "%s\n" \
-  "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_waiters_before_lock,avg_lock_hold_ns,avg_unlock_to_next_lock_ns_all" \
+  "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_waiters_before_lock,avg_lock_hold_ns,avg_unlock_to_next_lock_ns_all,protected_counter,lock_hold_samples,unlock_to_next_lock_samples_w0,avg_unlock_to_next_lock_ns_w0,unlock_to_next_lock_samples_w_gt0,avg_unlock_to_next_lock_ns_w_gt0" \
   > "$output_raw"
 
 extract_metric() {
@@ -208,6 +208,12 @@ for t in "${threads[@]}"; do
         avg_waiters_before_lock="$(extract_metric "$bench_output" "avg_waiters_before_lock")"
         avg_lock_hold_ns="$(extract_metric "$bench_output" "avg_lock_hold_ns")"
         avg_unlock_to_next_lock_ns_all="$(extract_metric "$bench_output" "avg_unlock_to_next_lock_ns_all")"
+        protected_counter="$(extract_metric "$bench_output" "protected_counter")"
+        lock_hold_samples="$(extract_metric "$bench_output" "lock_hold_samples")"
+        unlock_to_next_lock_samples_w0="$(extract_metric "$bench_output" "unlock_to_next_lock_samples_w0")"
+        avg_unlock_to_next_lock_ns_w0="$(extract_metric "$bench_output" "avg_unlock_to_next_lock_ns_w0")"
+        unlock_to_next_lock_samples_w_gt0="$(extract_metric "$bench_output" "unlock_to_next_lock_samples_w_gt0")"
+        avg_unlock_to_next_lock_ns_w_gt0="$(extract_metric "$bench_output" "avg_unlock_to_next_lock_ns_w_gt0")"
 
         if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" ]]; then
           echo "Failed to parse benchmark output for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
@@ -215,10 +221,13 @@ for t in "${threads[@]}"; do
           exit 1
         fi
 
-        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
           "$t" "$c" "$o" "$r" \
           "$throughput" "$elapsed_seconds" "$total_operations" \
           "$avg_waiters_before_lock" "$avg_lock_hold_ns" "$avg_unlock_to_next_lock_ns_all" \
+          "$protected_counter" "$lock_hold_samples" \
+          "$unlock_to_next_lock_samples_w0" "$avg_unlock_to_next_lock_ns_w0" \
+          "$unlock_to_next_lock_samples_w_gt0" "$avg_unlock_to_next_lock_ns_w_gt0" \
           >> "$output_raw"
       done
     done
