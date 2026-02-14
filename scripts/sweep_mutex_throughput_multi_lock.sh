@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+if [[ -n "${FLEXGUARD_DIR:-}" ]]; then
+  FLEXGUARD_DIR="$(cd -- "$FLEXGUARD_DIR" && pwd)"
+elif [[ -d "${MUTEXBENCH_DIR}/../flexguard" ]]; then
+  FLEXGUARD_DIR="$(cd -- "${MUTEXBENCH_DIR}/../flexguard" && pwd)"
+else
+  FLEXGUARD_DIR=""
+fi
+
 usage() {
   cat <<'EOF'
 Run mutex throughput sweep for multiple lock interpose scripts.
@@ -13,8 +23,9 @@ Options:
                              Item format:
                                1) /path/to/interpose_mcs.sh
                                2) mcs=/path/to/interpose_custom.sh
-  --sweep-script PATH        Sweep script to run (default: scripts/sweep_mutex_throughput.sh)
-  --output-root DIR          Output root directory (default: results)
+                               3) mcs (resolved as $FLEXGUARD_DIR/build/interpose_mcs.sh)
+  --sweep-script PATH        Sweep script to run (default: <mutexbench>/scripts/sweep_mutex_throughput.sh)
+  --output-root DIR          Output root directory (default: <mutexbench>/results)
   --dry-run                  Print commands only, do not execute
   -h, --help                 Show this help
 
@@ -25,7 +36,7 @@ Do not pass --output-raw / --output-summary; they are generated per lock:
 
 Example:
   scripts/sweep_mutex_throughput_multi_lock.sh \
-    --locks ~/flexguard/build/interpose_mcs.sh,~/flexguard/build/interpose_ticket.sh \
+    --locks mcs,ticket \
     --threads 1,2,4,8,16 \
     --critical-iters 10,100,500 \
     --outside-iters 10,100,500 \
@@ -57,6 +68,29 @@ trim_spaces() {
   printf "%s\n" "$v"
 }
 
+resolve_executable_path() {
+  local path="$1"
+  local base_dir="$2"
+
+  path="$(expand_home "$path")"
+  case "$path" in
+    /*)
+      printf "%s\n" "$path"
+      ;;
+    *)
+      if [[ -x "$path" ]]; then
+        printf "%s\n" "$path"
+      elif [[ -x "$base_dir/$path" ]]; then
+        printf "%s\n" "$base_dir/$path"
+      elif [[ -n "${FLEXGUARD_DIR:-}" && -x "$FLEXGUARD_DIR/$path" ]]; then
+        printf "%s\n" "$FLEXGUARD_DIR/$path"
+      else
+        printf "%s\n" "$path"
+      fi
+      ;;
+  esac
+}
+
 contains_flag() {
   local needle="$1"
   shift
@@ -72,8 +106,8 @@ contains_flag() {
 }
 
 locks_csv=""
-sweep_script="scripts/sweep_mutex_throughput.sh"
-output_root="results"
+sweep_script="$SCRIPT_DIR/sweep_mutex_throughput.sh"
+output_root="$MUTEXBENCH_DIR/results"
 dry_run="0"
 declare -a sweep_args=()
 
@@ -126,12 +160,16 @@ if contains_flag "--output-summary" "${sweep_args[@]}"; then
   exit 1
 fi
 
-sweep_script="$(expand_home "$sweep_script")"
+sweep_script="$(resolve_executable_path "$sweep_script" "$MUTEXBENCH_DIR")"
 if [[ ! -x "$sweep_script" ]]; then
   echo "Sweep script is not executable: $sweep_script" >&2
   exit 1
 fi
 
+output_root="$(expand_home "$output_root")"
+if [[ "$output_root" != /* ]]; then
+  output_root="$MUTEXBENCH_DIR/$output_root"
+fi
 mkdir -p "$output_root"
 
 declare -a lock_items=()
@@ -164,6 +202,13 @@ for item in "${lock_items[@]}"; do
     lock_name="${lock_name#interpose_}"
   fi
 
+  if [[ "$lock_script" != */* && "$lock_script" != *.sh && -n "${FLEXGUARD_DIR:-}" ]]; then
+    candidate_script="$FLEXGUARD_DIR/build/interpose_${lock_script}.sh"
+    if [[ -x "$candidate_script" ]]; then
+      lock_script="$candidate_script"
+    fi
+  fi
+
   if [[ -z "$lock_name" || -z "$lock_script" ]]; then
     echo "Invalid lock item: $item" >&2
     exit 1
@@ -178,7 +223,7 @@ for item in "${lock_items[@]}"; do
   fi
   seen_names["$lock_name"]=1
 
-  lock_script="$(expand_home "$lock_script")"
+  lock_script="$(resolve_executable_path "$lock_script" "$MUTEXBENCH_DIR")"
   if [[ ! -x "$lock_script" ]]; then
     echo "Lock script is not executable: $lock_script" >&2
     exit 1

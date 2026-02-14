@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
 usage() {
   cat <<'EOF'
 Sweep mutex_bench throughput across:
@@ -12,7 +15,7 @@ Usage:
   scripts/sweep_mutex_throughput.sh [options]
 
 Options:
-  --binary PATH                Benchmark binary path (default: ./mutex_bench)
+  --binary PATH                Benchmark binary path (default: <mutexbench>/mutex_bench)
   --threads CSV                Thread counts, comma-separated (default: 1,2,4,8,16)
   --critical-iters CSV         critical-iters values (default: 10,50,100,200,500)
   --outside-iters CSV          outside-iters values (default: 10,50,100,200,500)
@@ -26,8 +29,8 @@ Options:
                                Minimum per-thread warmup iterations after scaling (default: 0)
   --timing-sample-stride N     timing sample stride (default: 8)
   --repeats N                  runs per parameter point (default: 3)
-  --output-raw PATH            raw per-run CSV (default: throughput_sweep_raw.csv)
-  --output-summary PATH        aggregated CSV (default: throughput_sweep_summary.csv)
+  --output-raw PATH            raw per-run CSV (default: <mutexbench>/throughput_sweep_raw.csv)
+  --output-summary PATH        aggregated CSV (default: <mutexbench>/throughput_sweep_summary.csv)
   -h, --help                   Show this help
 
 Example:
@@ -42,16 +45,16 @@ Example:
 EOF
 }
 
-binary="./mutex_bench"
+binary="$MUTEXBENCH_DIR/mutex_bench"
 threads_csv="1,2,4,8,16,32,64"
 critical_iters_csv="10,50,100,200,500,1000,2000"
 outside_iters_csv="10,50,100,200,500,1000,2000"
-iterations="200000"
+iterations="409600"
 warmup_iterations="50000"
 timing_sample_stride="8"
 repeats="5"
-output_raw="throughput_sweep_raw.csv"
-output_summary="throughput_sweep_summary.csv"
+output_raw="$MUTEXBENCH_DIR/throughput_sweep_raw.csv"
+output_summary="$MUTEXBENCH_DIR/throughput_sweep_summary.csv"
 scale_workload_with_threads="yes"
 min_iterations_per_thread="1000"
 min_warmup_iterations_per_thread="0"
@@ -127,6 +130,55 @@ is_uint() {
   [[ "$value" =~ ^[0-9]+$ ]]
 }
 
+expand_home() {
+  local path="$1"
+  case "$path" in
+    "~")
+      printf "%s\n" "$HOME"
+      ;;
+    "~/"*)
+      printf "%s/%s\n" "$HOME" "${path#~/}"
+      ;;
+    *)
+      printf "%s\n" "$path"
+      ;;
+  esac
+}
+
+resolve_executable_path() {
+  local path="$1"
+  local base_dir="$2"
+
+  path="$(expand_home "$path")"
+  case "$path" in
+    /*)
+      printf "%s\n" "$path"
+      ;;
+    *)
+      if [[ -x "$path" ]]; then
+        printf "%s\n" "$path"
+      else
+        printf "%s\n" "$base_dir/$path"
+      fi
+      ;;
+  esac
+}
+
+resolve_output_path() {
+  local path="$1"
+  local base_dir="$2"
+
+  path="$(expand_home "$path")"
+  case "$path" in
+    /*)
+      printf "%s\n" "$path"
+      ;;
+    *)
+      printf "%s\n" "$base_dir/$path"
+      ;;
+  esac
+}
+
 parse_csv_values() {
   local csv="$1"
   local value_name="$2"
@@ -194,6 +246,10 @@ parse_csv_values "$threads_csv" "--threads" "no" threads
 parse_csv_values "$critical_iters_csv" "--critical-iters" "yes" critical_iters
 parse_csv_values "$outside_iters_csv" "--outside-iters" "yes" outside_iters
 
+binary="$(resolve_executable_path "$binary" "$MUTEXBENCH_DIR")"
+output_raw="$(resolve_output_path "$output_raw" "$MUTEXBENCH_DIR")"
+output_summary="$(resolve_output_path "$output_summary" "$MUTEXBENCH_DIR")"
+
 scaled_per_thread_work() {
   local base_per_thread="$1"
   local thread_count="$2"
@@ -212,7 +268,7 @@ scaled_per_thread_work() {
 
 if [[ ! -x "$binary" && "$(basename "$binary")" == "mutex_bench" ]]; then
   echo "Building mutex_bench..." >&2
-  make mutex_bench >/dev/null
+  make -C "$MUTEXBENCH_DIR" mutex_bench >/dev/null
 fi
 
 if [[ ! -x "$binary" ]]; then
