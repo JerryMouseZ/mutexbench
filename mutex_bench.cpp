@@ -25,30 +25,51 @@ inline uint64_t ReadTsc() {
 #endif
 }
 
+inline void PollUntilDeadline(const Clock::time_point &deadline) {
+  constexpr auto kPollSleep = std::chrono::microseconds(100);
+  while (true) {
+    const auto now = Clock::now();
+    if (now >= deadline) {
+      break;
+    }
+    const auto remain = deadline - now;
+    if (remain > kPollSleep) {
+      std::this_thread::sleep_for(kPollSleep);
+    } else {
+      std::this_thread::yield();
+    }
+  }
+}
+
 struct Config {
   int threads = 4;
-  uint64_t iterations_per_thread = 1'000'000;
-  uint64_t warmup_iterations_per_thread = 0;
+  uint64_t duration_ms = 1000;
+  uint64_t warmup_duration_ms = 0;
   uint64_t critical_iters = 100;
   uint64_t outside_iters = 100;
   uint64_t timing_sample_stride = 8;
 };
 
-[[noreturn]] void PrintUsageAndExit(const char* prog) {
+[[noreturn]] void PrintUsageAndExit(const char *prog) {
   std::cerr
       << "Usage: " << prog
-      << " [--threads N] [--iterations N] [--warmup-iterations N]"
-      << " [--critical-iters N] [--outside-iters N] [--timing-sample-stride N]\n"
+      << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
+      << " [--critical-iters N] [--outside-iters N] [--timing-sample-stride "
+         "N]\n"
       << "  --threads N       Number of worker threads (default: 4)\n"
-      << "  --iterations N    Iterations per thread (default: 1000000)\n"
-      << "  --warmup-iterations N  Warmup iterations per thread (default: 0)\n"
-      << "  --critical-iters N  Loop iterations in critical section (default: 100)\n"
+      << "  --duration-ms N   Measurement duration in milliseconds (default: "
+         "1000)\n"
+      << "  --warmup-duration-ms N  Warmup duration in milliseconds (default: "
+         "0)\n"
+      << "  --critical-iters N  Loop iterations in critical section (default: "
+         "100)\n"
       << "  --outside-iters N   Loop iterations outside lock (default: 100)\n"
-      << "  --timing-sample-stride N  Measure timing every N ops (default: 8)\n";
+      << "  --timing-sample-stride N  Measure timing every N ops (default: "
+         "8)\n";
   std::exit(1);
 }
 
-uint64_t ParseU64(const std::string& s, const char* flag) {
+uint64_t ParseU64(const std::string &s, const char *flag) {
   try {
     size_t idx = 0;
     unsigned long long v = std::stoull(s, &idx, 10);
@@ -63,11 +84,11 @@ uint64_t ParseU64(const std::string& s, const char* flag) {
   }
 }
 
-Config ParseArgs(int argc, char* argv[]) {
+Config ParseArgs(int argc, char *argv[]) {
   Config cfg;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    auto need_next = [&](const char* flag) -> std::string {
+    auto need_next = [&](const char *flag) -> std::string {
       if (i + 1 >= argc) {
         std::cerr << "Missing value for " << flag << "\n";
         PrintUsageAndExit(argv[0]);
@@ -76,19 +97,22 @@ Config ParseArgs(int argc, char* argv[]) {
     };
 
     if (arg == "--threads") {
-      cfg.threads = static_cast<int>(ParseU64(need_next("--threads"), "--threads"));
-    } else if (arg == "--iterations") {
-      cfg.iterations_per_thread = ParseU64(need_next("--iterations"), "--iterations");
-    } else if (arg == "--warmup-iterations") {
-      cfg.warmup_iterations_per_thread =
-          ParseU64(need_next("--warmup-iterations"), "--warmup-iterations");
+      cfg.threads =
+          static_cast<int>(ParseU64(need_next("--threads"), "--threads"));
+    } else if (arg == "--duration-ms") {
+      cfg.duration_ms = ParseU64(need_next("--duration-ms"), "--duration-ms");
+    } else if (arg == "--warmup-duration-ms") {
+      cfg.warmup_duration_ms =
+          ParseU64(need_next("--warmup-duration-ms"), "--warmup-duration-ms");
     } else if (arg == "--critical-iters") {
-      cfg.critical_iters = ParseU64(need_next("--critical-iters"), "--critical-iters");
+      cfg.critical_iters =
+          ParseU64(need_next("--critical-iters"), "--critical-iters");
     } else if (arg == "--outside-iters") {
-      cfg.outside_iters = ParseU64(need_next("--outside-iters"), "--outside-iters");
+      cfg.outside_iters =
+          ParseU64(need_next("--outside-iters"), "--outside-iters");
     } else if (arg == "--timing-sample-stride") {
-      cfg.timing_sample_stride =
-          ParseU64(need_next("--timing-sample-stride"), "--timing-sample-stride");
+      cfg.timing_sample_stride = ParseU64(need_next("--timing-sample-stride"),
+                                          "--timing-sample-stride");
     } else if (arg == "--help" || arg == "-h") {
       PrintUsageAndExit(argv[0]);
     } else {
@@ -99,6 +123,10 @@ Config ParseArgs(int argc, char* argv[]) {
 
   if (cfg.threads <= 0) {
     std::cerr << "--threads must be > 0\n";
+    std::exit(1);
+  }
+  if (cfg.duration_ms == 0) {
+    std::cerr << "--duration-ms must be > 0\n";
     std::exit(1);
   }
   if (cfg.timing_sample_stride == 0) {
@@ -115,7 +143,7 @@ inline void BurnIters(uint64_t iters) {
   }
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   Config cfg = ParseArgs(argc, argv);
 
   std::mutex mu;
@@ -129,8 +157,12 @@ int main(int argc, char* argv[]) {
   std::atomic<uint64_t> total_unlock_to_next_lock_samples_w_gt0{0};
   std::atomic<int64_t> lock_waiters{0};
   std::atomic<uint64_t> total_waiters_before_lock{0};
+  std::atomic<int> workers_ready{0};
   std::atomic<int> warmup_done{0};
+  std::atomic<bool> warmup_start{false};
+  std::atomic<bool> warmup_stop{false};
   std::atomic<bool> measure_start{false};
+  std::atomic<bool> measure_stop{false};
   // Protected by mu; tracks the unlock timestamp of the previous lock owner.
   uint64_t global_last_before_unlock = 0;
   bool has_global_last_before_unlock = false;
@@ -149,24 +181,31 @@ int main(int argc, char* argv[]) {
       uint64_t local_waiters_before_lock = 0;
       uint64_t local_ops = 0;
 
-      for (uint64_t i = 0; i < cfg.warmup_iterations_per_thread; ++i) {
-        lock_waiters.fetch_add(1, std::memory_order_relaxed);
-        {
-          std::lock_guard<std::mutex> lock(mu);
-          BurnIters(cfg.critical_iters);
+      workers_ready.fetch_add(1, std::memory_order_release);
+      while (!warmup_start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+
+      if (cfg.warmup_duration_ms > 0) {
+        while (!warmup_stop.load(std::memory_order_acquire)) {
+          lock_waiters.fetch_add(1, std::memory_order_relaxed);
+          {
+            std::lock_guard<std::mutex> lock(mu);
+            BurnIters(cfg.critical_iters);
+          }
+          lock_waiters.fetch_sub(1, std::memory_order_relaxed);
+          BurnIters(cfg.outside_iters);
         }
-        lock_waiters.fetch_sub(1, std::memory_order_relaxed);
-        BurnIters(cfg.outside_iters);
       }
 
       warmup_done.fetch_add(1, std::memory_order_release);
       while (!measure_start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
       }
 
       uint64_t sample_countdown =
           static_cast<uint64_t>(thread_index) % cfg.timing_sample_stride;
-
-      for (uint64_t i = 0; i < cfg.iterations_per_thread; ++i) {
+      while (!measure_stop.load(std::memory_order_acquire)) {
         const int64_t waiters_before_lock =
             lock_waiters.fetch_add(1, std::memory_order_relaxed);
         local_waiters_before_lock += static_cast<uint64_t>(waiters_before_lock);
@@ -197,8 +236,10 @@ int main(int argc, char* argv[]) {
         }
         lock_waiters.fetch_sub(1, std::memory_order_relaxed);
         if (do_timing_sample) {
-          if (has_prev_global_before_unlock && after_lock >= prev_global_before_unlock) {
-            const uint64_t delta_cycles = (after_lock - prev_global_before_unlock);
+          if (has_prev_global_before_unlock &&
+              after_lock >= prev_global_before_unlock) {
+            const uint64_t delta_cycles =
+                (after_lock - prev_global_before_unlock);
             if (waiters_before_lock == 0) {
               local_unlock_to_next_lock_cycles_w0 += delta_cycles;
               ++local_unlock_to_next_lock_samples_w0;
@@ -216,45 +257,69 @@ int main(int argc, char* argv[]) {
         ++local_ops;
       }
 
-      total_lock_hold_cycles.fetch_add(local_lock_hold_cycles, std::memory_order_relaxed);
-      total_lock_hold_samples.fetch_add(local_lock_hold_samples, std::memory_order_relaxed);
-      total_unlock_to_next_lock_cycles_w0.fetch_add(local_unlock_to_next_lock_cycles_w0,
-                                                    std::memory_order_relaxed);
-      total_unlock_to_next_lock_samples_w0.fetch_add(local_unlock_to_next_lock_samples_w0,
-                                                     std::memory_order_relaxed);
-      total_unlock_to_next_lock_cycles_w_gt0.fetch_add(local_unlock_to_next_lock_cycles_w_gt0,
-                                                       std::memory_order_relaxed);
-      total_unlock_to_next_lock_samples_w_gt0.fetch_add(local_unlock_to_next_lock_samples_w_gt0,
-                                                        std::memory_order_relaxed);
+      total_lock_hold_cycles.fetch_add(local_lock_hold_cycles,
+                                       std::memory_order_relaxed);
+      total_lock_hold_samples.fetch_add(local_lock_hold_samples,
+                                        std::memory_order_relaxed);
+      total_unlock_to_next_lock_cycles_w0.fetch_add(
+          local_unlock_to_next_lock_cycles_w0, std::memory_order_relaxed);
+      total_unlock_to_next_lock_samples_w0.fetch_add(
+          local_unlock_to_next_lock_samples_w0, std::memory_order_relaxed);
+      total_unlock_to_next_lock_cycles_w_gt0.fetch_add(
+          local_unlock_to_next_lock_cycles_w_gt0, std::memory_order_relaxed);
+      total_unlock_to_next_lock_samples_w_gt0.fetch_add(
+          local_unlock_to_next_lock_samples_w_gt0, std::memory_order_relaxed);
       total_waiters_before_lock.fetch_add(local_waiters_before_lock,
                                           std::memory_order_relaxed);
       total_ops.fetch_add(local_ops, std::memory_order_relaxed);
     });
   }
 
-  while (warmup_done.load(std::memory_order_acquire) < cfg.threads) {
+  while (workers_ready.load(std::memory_order_acquire) < cfg.threads) {
+    std::this_thread::yield();
   }
+
+  warmup_start.store(true, std::memory_order_release);
+  if (cfg.warmup_duration_ms > 0) {
+    const auto warmup_deadline =
+        Clock::now() + std::chrono::milliseconds(cfg.warmup_duration_ms);
+    PollUntilDeadline(warmup_deadline);
+    warmup_stop.store(true, std::memory_order_release);
+  }
+
+  while (warmup_done.load(std::memory_order_acquire) < cfg.threads) {
+    std::this_thread::yield();
+  }
+
   const auto start = Clock::now();
   const uint64_t tsc_start = ReadTsc();
   measure_start.store(true, std::memory_order_release);
+  const auto deadline = start + std::chrono::milliseconds(cfg.duration_ms);
+  PollUntilDeadline(deadline);
+  measure_stop.store(true, std::memory_order_release);
 
-  for (auto& th : workers) {
+  for (auto &th : workers) {
     th.join();
   }
   const uint64_t tsc_end = ReadTsc();
   const auto end = Clock::now();
 
   const double elapsed_s =
-      std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
-  const double elapsed_ns = std::chrono::duration_cast<std::chrono::duration<double, std::nano>>(
-                                end - start)
-                                .count();
-  const uint64_t elapsed_cycles = (tsc_end > tsc_start) ? (tsc_end - tsc_start) : 0;
+      std::chrono::duration_cast<std::chrono::duration<double>>(end - start)
+          .count();
+  const double elapsed_ns =
+      std::chrono::duration_cast<std::chrono::duration<double, std::nano>>(
+          end - start)
+          .count();
+  const uint64_t elapsed_cycles =
+      (tsc_end > tsc_start) ? (tsc_end - tsc_start) : 0;
   const double ns_per_cycle =
       elapsed_cycles ? (elapsed_ns / static_cast<double>(elapsed_cycles)) : 0.0;
   const uint64_t ops = total_ops.load(std::memory_order_relaxed);
-  const uint64_t lock_hold_cycles = total_lock_hold_cycles.load(std::memory_order_relaxed);
-  const uint64_t lock_hold_samples = total_lock_hold_samples.load(std::memory_order_relaxed);
+  const uint64_t lock_hold_cycles =
+      total_lock_hold_cycles.load(std::memory_order_relaxed);
+  const uint64_t lock_hold_samples =
+      total_lock_hold_samples.load(std::memory_order_relaxed);
   const uint64_t unlock_to_next_lock_cycles_w0 =
       total_unlock_to_next_lock_cycles_w0.load(std::memory_order_relaxed);
   const uint64_t unlock_to_next_lock_samples_w0 =
@@ -267,7 +332,8 @@ int main(int argc, char* argv[]) {
       total_waiters_before_lock.load(std::memory_order_relaxed);
   const double throughput = ops / elapsed_s;
   const double avg_lock_hold_cycles =
-      lock_hold_samples ? static_cast<double>(lock_hold_cycles) / static_cast<double>(lock_hold_samples)
+      lock_hold_samples ? static_cast<double>(lock_hold_cycles) /
+                              static_cast<double>(lock_hold_samples)
                         : 0.0;
   const double avg_unlock_to_next_lock_cycles_w0 =
       unlock_to_next_lock_samples_w0
@@ -295,13 +361,14 @@ int main(int argc, char* argv[]) {
                 static_cast<double>(unlock_to_next_lock_samples_total)
           : 0.0;
   const double avg_waiters_before_lock =
-      ops ? static_cast<double>(waiters_before_lock_total) / static_cast<double>(ops) : 0.0;
+      ops ? static_cast<double>(waiters_before_lock_total) /
+                static_cast<double>(ops)
+          : 0.0;
 
   std::cout << "=== Mutex Benchmark ===\n";
   std::cout << "threads: " << cfg.threads << "\n";
-  std::cout << "iterations_per_thread: " << cfg.iterations_per_thread << "\n";
-  std::cout << "warmup_iterations_per_thread: " << cfg.warmup_iterations_per_thread
-            << "\n";
+  std::cout << "duration_ms: " << cfg.duration_ms << "\n";
+  std::cout << "warmup_duration_ms: " << cfg.warmup_duration_ms << "\n";
   std::cout << "critical_iters: " << cfg.critical_iters << "\n";
   std::cout << "outside_iters: " << cfg.outside_iters << "\n";
   std::cout << "timing_sample_stride: " << cfg.timing_sample_stride << "\n";
@@ -313,13 +380,16 @@ int main(int argc, char* argv[]) {
   std::cout << "throughput_ops_per_sec: " << throughput << "\n";
   std::cout << "lock_hold_samples: " << lock_hold_samples << "\n";
   std::cout << "avg_lock_hold_ns: " << avg_lock_hold_ns << "\n";
-  std::cout << "unlock_to_next_lock_samples_w0: " << unlock_to_next_lock_samples_w0 << "\n";
-  std::cout << "avg_unlock_to_next_lock_ns_w0: " << avg_unlock_to_next_lock_ns_w0 << "\n";
-  std::cout << "unlock_to_next_lock_samples_w_gt0: " << unlock_to_next_lock_samples_w_gt0
-            << "\n";
-  std::cout << "avg_unlock_to_next_lock_ns_w_gt0: " << avg_unlock_to_next_lock_ns_w_gt0
-            << "\n";
-  std::cout << "avg_unlock_to_next_lock_ns_all: " << avg_unlock_to_next_lock_ns_all << "\n";
+  std::cout << "unlock_to_next_lock_samples_w0: "
+            << unlock_to_next_lock_samples_w0 << "\n";
+  std::cout << "avg_unlock_to_next_lock_ns_w0: "
+            << avg_unlock_to_next_lock_ns_w0 << "\n";
+  std::cout << "unlock_to_next_lock_samples_w_gt0: "
+            << unlock_to_next_lock_samples_w_gt0 << "\n";
+  std::cout << "avg_unlock_to_next_lock_ns_w_gt0: "
+            << avg_unlock_to_next_lock_ns_w_gt0 << "\n";
+  std::cout << "avg_unlock_to_next_lock_ns_all: "
+            << avg_unlock_to_next_lock_ns_all << "\n";
   std::cout << "avg_waiters_before_lock: " << avg_waiters_before_lock << "\n";
 
   return 0;
