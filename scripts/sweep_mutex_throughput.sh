@@ -202,6 +202,20 @@ for t in "${threads[@]}"; do
           --outside-iters "$o" \
           --timing-sample-stride "$timing_sample_stride")"
 
+        # Initialize all per-run fields so nounset never trips on missing metrics.
+        throughput=""
+        elapsed_seconds=""
+        total_operations=""
+        avg_waiters_before_lock=""
+        avg_lock_hold_ns=""
+        avg_unlock_to_next_lock_ns_all=""
+        protected_counter=""
+        lock_hold_samples=""
+        unlock_to_next_lock_samples_w0=""
+        avg_unlock_to_next_lock_ns_w0=""
+        unlock_to_next_lock_samples_w_gt0=""
+        avg_unlock_to_next_lock_ns_w_gt0=""
+
         throughput="$(extract_metric "$bench_output" "throughput_ops_per_sec")"
         elapsed_seconds="$(extract_metric "$bench_output" "elapsed_seconds")"
         total_operations="$(extract_metric "$bench_output" "total_operations")"
