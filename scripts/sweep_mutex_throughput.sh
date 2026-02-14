@@ -16,6 +16,7 @@ Usage:
 
 Options:
   --binary PATH                Benchmark binary path (default: <mutexbench>/mutex_bench)
+  --bench-ld-preload PATH      Set LD_PRELOAD only for benchmark binary execution
   --threads CSV                Thread counts, comma-separated (default: 1,2,4,8,16)
   --critical-iters CSV         critical-iters values (default: 10,50,100,200,500)
   --outside-iters CSV          outside-iters values (default: 10,50,100,200,500)
@@ -40,6 +41,7 @@ EOF
 }
 
 binary="$MUTEXBENCH_DIR/mutex_bench"
+bench_ld_preload=""
 threads_csv="1,2,4,8,16,32,64"
 critical_iters_csv="10,50,100,200,500,1000,2000"
 outside_iters_csv="10,50,100,200,500,1000,2000"
@@ -54,6 +56,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --binary)
       binary="${2:-}"
+      shift 2
+      ;;
+    --bench-ld-preload)
+      bench_ld_preload="${2:-}"
       shift 2
       ;;
     --threads)
@@ -158,6 +164,27 @@ resolve_output_path() {
   esac
 }
 
+resolve_input_file_path() {
+  local path="$1"
+  local base_dir="$2"
+
+  path="$(expand_home "$path")"
+  case "$path" in
+    /*)
+      printf "%s\n" "$path"
+      ;;
+    *)
+      if [[ -f "$path" ]]; then
+        printf "%s\n" "$path"
+      elif [[ -f "$base_dir/$path" ]]; then
+        printf "%s\n" "$base_dir/$path"
+      else
+        printf "%s\n" "$path"
+      fi
+      ;;
+  esac
+}
+
 restore_output_owner_if_sudo_user() {
   local sudo_uid="${SUDO_UID:-}"
   local sudo_gid="${SUDO_GID:-}"
@@ -247,6 +274,13 @@ parse_csv_values "$outside_iters_csv" "--outside-iters" "yes" outside_iters
 binary="$(resolve_executable_path "$binary" "$MUTEXBENCH_DIR")"
 output_raw="$(resolve_output_path "$output_raw" "$MUTEXBENCH_DIR")"
 output_summary="$(resolve_output_path "$output_summary" "$MUTEXBENCH_DIR")"
+if [[ -n "$bench_ld_preload" ]]; then
+  bench_ld_preload="$(resolve_input_file_path "$bench_ld_preload" "$MUTEXBENCH_DIR")"
+  if [[ ! -f "$bench_ld_preload" ]]; then
+    echo "--bench-ld-preload file not found: $bench_ld_preload" >&2
+    exit 1
+  fi
+fi
 
 if [[ ! -x "$binary" && "$(basename "$binary")" == "mutex_bench" ]]; then
   echo "Building mutex_bench..." >&2
@@ -281,13 +315,20 @@ for t in "${threads[@]}"; do
         current_run=$((current_run + 1))
         echo "[${current_run}/${total_runs}] threads=${t} critical=${c} outside=${o} repeat=${r} duration_ms=${duration_ms} warmup_duration_ms=${warmup_duration_ms}" >&2
 
-        bench_output="$("$binary" \
-          --threads "$t" \
-          --duration-ms "$duration_ms" \
-          --warmup-duration-ms "$warmup_duration_ms" \
-          --critical-iters "$c" \
-          --outside-iters "$o" \
-          --timing-sample-stride "$timing_sample_stride")"
+        bench_cmd=(
+          "$binary"
+          --threads "$t"
+          --duration-ms "$duration_ms"
+          --warmup-duration-ms "$warmup_duration_ms"
+          --critical-iters "$c"
+          --outside-iters "$o"
+          --timing-sample-stride "$timing_sample_stride"
+        )
+        if [[ -n "$bench_ld_preload" ]]; then
+          bench_output="$(env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}")"
+        else
+          bench_output="$("${bench_cmd[@]}")"
+        fi
 
         # Initialize all per-run fields so nounset never trips on missing metrics.
         throughput=""

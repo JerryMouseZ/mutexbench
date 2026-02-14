@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="$(cd -- "${MUTEXBENCH_DIR}/../.." && pwd)"
 if [[ -n "${FLEXGUARD_DIR:-}" ]]; then
   FLEXGUARD_DIR="$(cd -- "$FLEXGUARD_DIR" && pwd)"
 elif [[ -d "${MUTEXBENCH_DIR}/../flexguard" ]]; then
@@ -25,11 +26,16 @@ Options:
                                2) /path/to/interpose_mcs.sh
                                3) mcs=/path/to/interpose_custom.sh
                                4) mcs (resolved as $FLEXGUARD_DIR/build/interpose_mcs.sh)
+                               5) lb_simple (run benchmark with LD_PRELOAD=liblb_simple.so)
+                             For lb_simple library path:
+                               1) use $LB_SIMPLE_LIB if set
+                               2) else <repo>/target/release/liblb_simple.so
+                               3) else <repo>/target/debug/liblb_simple.so
   --sweep-script PATH        Sweep script to run (default: <mutexbench>/scripts/sweep_mutex_throughput.sh)
   --output-root DIR          Output root directory (default: <mutexbench>/results)
   --sudo-mode MODE           MODE in {all,auto,none} (default: all)
                              all: sudo for every lock run
-                             auto: sudo only for flexguard*/hybridlock* locks
+                             auto: sudo only for flexguard*/hybridlock*/lb_simple locks
                              none: never sudo
   --dry-run                  Print commands only, do not execute
   -h, --help                 Show this help
@@ -97,6 +103,44 @@ resolve_executable_path() {
   esac
 }
 
+resolve_lb_simple_lib_path() {
+  local path="${LB_SIMPLE_LIB:-}"
+  local default_release="$PROJECT_ROOT/target/release/liblb_simple.so"
+  local default_debug="$PROJECT_ROOT/target/debug/liblb_simple.so"
+
+  if [[ -n "$path" ]]; then
+    path="$(expand_home "$path")"
+    case "$path" in
+      /*)
+        printf "%s\n" "$path"
+        ;;
+      *)
+        if [[ -f "$path" ]]; then
+          printf "%s\n" "$path"
+        elif [[ -f "$PROJECT_ROOT/$path" ]]; then
+          printf "%s\n" "$PROJECT_ROOT/$path"
+        elif [[ -f "$MUTEXBENCH_DIR/$path" ]]; then
+          printf "%s\n" "$MUTEXBENCH_DIR/$path"
+        else
+          printf "%s\n" "$path"
+        fi
+        ;;
+    esac
+    return 0
+  fi
+
+  if [[ -f "$default_release" ]]; then
+    printf "%s\n" "$default_release"
+    return 0
+  fi
+  if [[ -f "$default_debug" ]]; then
+    printf "%s\n" "$default_debug"
+    return 0
+  fi
+
+  printf "%s\n" "$default_release"
+}
+
 contains_flag() {
   local needle="$1"
   shift
@@ -116,7 +160,7 @@ should_auto_sudo() {
   local lock_script="${2:-}"
 
   case "$lock_name" in
-    flexguard*|hybridlock*)
+    flexguard*|hybridlock*|lb_simple)
       return 0
       ;;
   esac
@@ -229,6 +273,7 @@ for item in "${lock_items[@]}"; do
   lock_name=""
   lock_script=""
   lock_kind="hook"
+  lb_simple_lib=""
   if [[ "$item" == *=* ]]; then
     lock_name="${item%%=*}"
     lock_script="${item#*=}"
@@ -239,6 +284,11 @@ for item in "${lock_items[@]}"; do
       mutex|native-mutex)
         lock_kind="native"
         lock_name="mutex"
+        lock_script=""
+        ;;
+      lb_simple)
+        lock_kind="lb_simple"
+        lock_name="lb_simple"
         lock_script=""
         ;;
       *)
@@ -277,6 +327,13 @@ for item in "${lock_items[@]}"; do
       echo "Lock script is not executable: $lock_script" >&2
       exit 1
     fi
+  elif [[ "$lock_kind" == "lb_simple" ]]; then
+    lb_simple_lib="$(resolve_lb_simple_lib_path)"
+    if [[ ! -f "$lb_simple_lib" ]]; then
+      echo "lb_simple library not found: $lb_simple_lib" >&2
+      echo "Build first (cargo build --release) or set LB_SIMPLE_LIB to liblb_simple.so path." >&2
+      exit 1
+    fi
   fi
 
   lock_dir="${output_root}/${lock_name}"
@@ -288,6 +345,14 @@ for item in "${lock_items[@]}"; do
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
+      --output-raw "$raw_out"
+      --output-summary "$summary_out"
+    )
+  elif [[ "$lock_kind" == "lb_simple" ]]; then
+    cmd=(
+      "$sweep_script"
+      "${sweep_args[@]}"
+      --bench-ld-preload "$lb_simple_lib"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
