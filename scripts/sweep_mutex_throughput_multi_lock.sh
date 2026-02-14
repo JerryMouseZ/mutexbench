@@ -13,7 +13,7 @@ fi
 
 usage() {
   cat <<'EOF'
-Run mutex throughput sweep for multiple lock interpose scripts.
+Run mutex throughput sweep for multiple lock modes (native mutex + interpose scripts).
 
 Usage:
   scripts/sweep_mutex_throughput_multi_lock.sh --locks CSV [options] [sweep args...]
@@ -21,11 +21,16 @@ Usage:
 Options:
   --locks CSV                Required. Comma-separated lock scripts.
                              Item format:
-                               1) /path/to/interpose_mcs.sh
-                               2) mcs=/path/to/interpose_custom.sh
-                               3) mcs (resolved as $FLEXGUARD_DIR/build/interpose_mcs.sh)
+                               1) mutex or native-mutex (run native mutex; no interpose hook)
+                               2) /path/to/interpose_mcs.sh
+                               3) mcs=/path/to/interpose_custom.sh
+                               4) mcs (resolved as $FLEXGUARD_DIR/build/interpose_mcs.sh)
   --sweep-script PATH        Sweep script to run (default: <mutexbench>/scripts/sweep_mutex_throughput.sh)
   --output-root DIR          Output root directory (default: <mutexbench>/results)
+  --sudo-mode MODE           MODE in {all,auto,none} (default: all)
+                             all: sudo for every lock run
+                             auto: sudo only for flexguard*/hybridlock* locks
+                             none: never sudo
   --dry-run                  Print commands only, do not execute
   -h, --help                 Show this help
 
@@ -36,7 +41,8 @@ Do not pass --output-raw / --output-summary; they are generated per lock:
 
 Example:
   scripts/sweep_mutex_throughput_multi_lock.sh \
-    --locks mcs,ticket \
+    --locks mutex,mcs,ticket \
+    --sudo-mode all \
     --threads 1,2,4,8,16 \
     --critical-iters 10,100,500 \
     --outside-iters 10,100,500 \
@@ -105,9 +111,33 @@ contains_flag() {
   return 1
 }
 
+should_auto_sudo() {
+  local lock_name="$1"
+  local lock_script="${2:-}"
+
+  case "$lock_name" in
+    flexguard*|hybridlock*)
+      return 0
+      ;;
+  esac
+
+  if [[ -n "$lock_script" ]]; then
+    local script_base
+    script_base="$(basename "$lock_script")"
+    case "$script_base" in
+      interpose_flexguard*.sh|interpose_hybridlock*.sh)
+        return 0
+        ;;
+    esac
+  fi
+
+  return 1
+}
+
 locks_csv=""
 sweep_script="$SCRIPT_DIR/sweep_mutex_throughput.sh"
 output_root="$MUTEXBENCH_DIR/results"
+sudo_mode="all"
 dry_run="0"
 declare -a sweep_args=()
 
@@ -123,6 +153,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --output-root)
       output_root="${2:-}"
+      shift 2
+      ;;
+    --sudo-mode)
+      sudo_mode="${2:-}"
       shift 2
       ;;
     --dry-run)
@@ -159,6 +193,10 @@ if contains_flag "--output-summary" "${sweep_args[@]}"; then
   echo "Do not pass --output-summary. It is generated per lock." >&2
   exit 1
 fi
+if [[ "$sudo_mode" != "all" && "$sudo_mode" != "auto" && "$sudo_mode" != "none" ]]; then
+  echo "--sudo-mode must be one of: all, auto, none" >&2
+  exit 1
+fi
 
 sweep_script="$(resolve_executable_path "$sweep_script" "$MUTEXBENCH_DIR")"
 if [[ ! -x "$sweep_script" ]]; then
@@ -190,26 +228,36 @@ for item in "${lock_items[@]}"; do
 
   lock_name=""
   lock_script=""
+  lock_kind="hook"
   if [[ "$item" == *=* ]]; then
     lock_name="${item%%=*}"
     lock_script="${item#*=}"
     lock_name="$(trim_spaces "$lock_name")"
     lock_script="$(trim_spaces "$lock_script")"
   else
-    lock_script="$item"
-    lock_base="$(basename "$lock_script")"
-    lock_name="${lock_base%.sh}"
-    lock_name="${lock_name#interpose_}"
+    case "$item" in
+      mutex|native-mutex)
+        lock_kind="native"
+        lock_name="mutex"
+        lock_script=""
+        ;;
+      *)
+        lock_script="$item"
+        lock_base="$(basename "$lock_script")"
+        lock_name="${lock_base%.sh}"
+        lock_name="${lock_name#interpose_}"
+        ;;
+    esac
   fi
 
-  if [[ "$lock_script" != */* && "$lock_script" != *.sh && -n "${FLEXGUARD_DIR:-}" ]]; then
+  if [[ "$lock_kind" == "hook" && "$lock_script" != */* && "$lock_script" != *.sh && -n "${FLEXGUARD_DIR:-}" ]]; then
     candidate_script="$FLEXGUARD_DIR/build/interpose_${lock_script}.sh"
     if [[ -x "$candidate_script" ]]; then
       lock_script="$candidate_script"
     fi
   fi
 
-  if [[ -z "$lock_name" || -z "$lock_script" ]]; then
+  if [[ -z "$lock_name" || ( "$lock_kind" == "hook" && -z "$lock_script" ) ]]; then
     echo "Invalid lock item: $item" >&2
     exit 1
   fi
@@ -223,10 +271,12 @@ for item in "${lock_items[@]}"; do
   fi
   seen_names["$lock_name"]=1
 
-  lock_script="$(resolve_executable_path "$lock_script" "$MUTEXBENCH_DIR")"
-  if [[ ! -x "$lock_script" ]]; then
-    echo "Lock script is not executable: $lock_script" >&2
-    exit 1
+  if [[ "$lock_kind" == "hook" ]]; then
+    lock_script="$(resolve_executable_path "$lock_script" "$MUTEXBENCH_DIR")"
+    if [[ ! -x "$lock_script" ]]; then
+      echo "Lock script is not executable: $lock_script" >&2
+      exit 1
+    fi
   fi
 
   lock_dir="${output_root}/${lock_name}"
@@ -234,22 +284,56 @@ for item in "${lock_items[@]}"; do
   summary_out="${lock_dir}/summary.csv"
   mkdir -p "$lock_dir"
 
-  cmd=(
-    "$lock_script"
-    "$sweep_script"
-    "${sweep_args[@]}"
-    --output-raw "$raw_out"
-    --output-summary "$summary_out"
-  )
+  if [[ "$lock_kind" == "native" ]]; then
+    cmd=(
+      "$sweep_script"
+      "${sweep_args[@]}"
+      --output-raw "$raw_out"
+      --output-summary "$summary_out"
+    )
+  else
+    cmd=(
+      "$lock_script"
+      "$sweep_script"
+      "${sweep_args[@]}"
+      --output-raw "$raw_out"
+      --output-summary "$summary_out"
+    )
+  fi
 
-  echo "=== lock=${lock_name} ===" >&2
+  should_sudo="no"
+  case "$sudo_mode" in
+    all)
+      should_sudo="yes"
+      ;;
+    auto)
+      if should_auto_sudo "$lock_name" "$lock_script"; then
+        should_sudo="yes"
+      fi
+      ;;
+    none)
+      should_sudo="no"
+      ;;
+  esac
+
+  run_cmd=("${cmd[@]}")
+  if [[ "$should_sudo" == "yes" ]]; then
+    run_cmd=(sudo -- "${cmd[@]}")
+  fi
+
+  echo "=== lock=${lock_name} kind=${lock_kind} sudo=${should_sudo} ===" >&2
   printf 'Command:' >&2
-  printf ' %q' "${cmd[@]}" >&2
+  printf ' %q' "${run_cmd[@]}" >&2
   printf '\n' >&2
 
   if [[ "$dry_run" == "1" ]]; then
     continue
   fi
 
-  "${cmd[@]}"
+  # Pre-create outputs as invoking user so post-run files stay user-editable.
+  : > "$raw_out"
+  : > "$summary_out"
+  chmod u+rw "$raw_out" "$summary_out"
+
+  "${run_cmd[@]}"
 done

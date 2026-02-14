@@ -179,6 +179,38 @@ resolve_output_path() {
   esac
 }
 
+restore_output_owner_if_sudo_user() {
+  local sudo_uid="${SUDO_UID:-}"
+  local sudo_gid="${SUDO_GID:-}"
+  local path=""
+  local parent=""
+
+  if [[ "$EUID" -ne 0 || -z "$sudo_uid" || -z "$sudo_gid" ]]; then
+    return 0
+  fi
+
+  for path in "$output_raw" "$output_summary"; do
+    if [[ -e "$path" ]]; then
+      if ! chown "$sudo_uid:$sudo_gid" "$path"; then
+        echo "Warning: failed to chown file: $path" >&2
+      fi
+      if ! chmod u+rw "$path"; then
+        echo "Warning: failed to chmod file: $path" >&2
+      fi
+    fi
+
+    parent="$(dirname "$path")"
+    if [[ -d "$parent" ]]; then
+      if ! chown "$sudo_uid:$sudo_gid" "$parent"; then
+        echo "Warning: failed to chown directory: $parent" >&2
+      fi
+      if ! chmod u+rwx "$parent"; then
+        echo "Warning: failed to chmod directory: $parent" >&2
+      fi
+    fi
+  done
+}
+
 parse_csv_values() {
   local csv="$1"
   local value_name="$2"
@@ -381,6 +413,8 @@ awk -F',' '
     }
   }
 ' "$output_raw" | sort -t',' -k1,1n -k2,2n -k3,3n > "$output_summary"
+
+restore_output_owner_if_sudo_user
 
 echo "Raw results: $output_raw" >&2
 echo "Summary results: $output_summary" >&2
