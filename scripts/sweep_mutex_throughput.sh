@@ -399,17 +399,45 @@ awk -F',' '
     sumsq[key] += x * x
     if (!(key in min) || x < min[key]) min[key] = x
     if (!(key in max) || x > max[key]) max[key] = x
+
+    if ($6 != "")  { sum_elapsed[key] += ($6 + 0.0); cnt_elapsed[key]++ }
+    if ($7 != "")  { sum_total_ops[key] += ($7 + 0.0); cnt_total_ops[key]++ }
+    if ($8 != "")  { sum_waiters[key] += ($8 + 0.0); cnt_waiters[key]++ }
+    if ($9 != "")  { sum_lock_hold_ns[key] += ($9 + 0.0); cnt_lock_hold_ns[key]++ }
+    if ($10 != "") { sum_u2n_all[key] += ($10 + 0.0); cnt_u2n_all[key]++ }
+    if ($11 != "") { sum_counter[key] += ($11 + 0.0); cnt_counter[key]++ }
+    if ($12 != "") { sum_lock_hold_samples[key] += ($12 + 0.0); cnt_lock_hold_samples[key]++ }
+    if ($13 != "") { sum_u2n_w0_samples[key] += ($13 + 0.0); cnt_u2n_w0_samples[key]++ }
+    if ($14 != "") { sum_u2n_w0_ns[key] += ($14 + 0.0); cnt_u2n_w0_ns[key]++ }
+    if ($15 != "") { sum_u2n_wgt0_samples[key] += ($15 + 0.0); cnt_u2n_wgt0_samples[key]++ }
+    if ($16 != "") { sum_u2n_wgt0_ns[key] += ($16 + 0.0); cnt_u2n_wgt0_ns[key]++ }
   }
   END {
-    print "threads,critical_iters,outside_iters,repeats,mean_throughput_ops_per_sec,stddev_throughput_ops_per_sec,min_throughput_ops_per_sec,max_throughput_ops_per_sec"
+    print "threads,critical_iters,outside_iters,repeats,mean_throughput_ops_per_sec,stddev_throughput_ops_per_sec,min_throughput_ops_per_sec,max_throughput_ops_per_sec,mean_elapsed_seconds,mean_total_operations,mean_avg_waiters_before_lock,mean_avg_lock_hold_ns,mean_avg_unlock_to_next_lock_ns_all,mean_protected_counter,mean_lock_hold_samples,mean_unlock_to_next_lock_samples_w0,mean_avg_unlock_to_next_lock_ns_w0,mean_unlock_to_next_lock_samples_w_gt0,mean_avg_unlock_to_next_lock_ns_w_gt0"
     for (k in n) {
       mean = sum[k] / n[k]
       var = (sumsq[k] / n[k]) - (mean * mean)
       if (var < 0) var = 0
       std = sqrt(var)
+
+      mean_elapsed = (cnt_elapsed[k] > 0) ? (sum_elapsed[k] / cnt_elapsed[k]) : 0
+      mean_total_ops = (cnt_total_ops[k] > 0) ? (sum_total_ops[k] / cnt_total_ops[k]) : 0
+      mean_waiters = (cnt_waiters[k] > 0) ? (sum_waiters[k] / cnt_waiters[k]) : 0
+      mean_lock_hold = (cnt_lock_hold_ns[k] > 0) ? (sum_lock_hold_ns[k] / cnt_lock_hold_ns[k]) : 0
+      mean_u2n_all = (cnt_u2n_all[k] > 0) ? (sum_u2n_all[k] / cnt_u2n_all[k]) : 0
+      mean_counter = (cnt_counter[k] > 0) ? (sum_counter[k] / cnt_counter[k]) : 0
+      mean_lock_hold_samples = (cnt_lock_hold_samples[k] > 0) ? (sum_lock_hold_samples[k] / cnt_lock_hold_samples[k]) : 0
+      mean_u2n_w0_samples = (cnt_u2n_w0_samples[k] > 0) ? (sum_u2n_w0_samples[k] / cnt_u2n_w0_samples[k]) : 0
+      mean_u2n_w0_ns = (cnt_u2n_w0_ns[k] > 0) ? (sum_u2n_w0_ns[k] / cnt_u2n_w0_ns[k]) : 0
+      mean_u2n_wgt0_samples = (cnt_u2n_wgt0_samples[k] > 0) ? (sum_u2n_wgt0_samples[k] / cnt_u2n_wgt0_samples[k]) : 0
+      mean_u2n_wgt0_ns = (cnt_u2n_wgt0_ns[k] > 0) ? (sum_u2n_wgt0_ns[k] / cnt_u2n_wgt0_ns[k]) : 0
+
       split(k, parts, FS)
-      printf "%s,%s,%s,%d,%.6f,%.6f,%.6f,%.6f\n", \
-             parts[1], parts[2], parts[3], n[k], mean, std, min[k], max[k]
+      printf "%s,%s,%s,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", \
+             parts[1], parts[2], parts[3], n[k], mean, std, min[k], max[k], \
+             mean_elapsed, mean_total_ops, mean_waiters, mean_lock_hold, mean_u2n_all, \
+             mean_counter, mean_lock_hold_samples, mean_u2n_w0_samples, mean_u2n_w0_ns, \
+             mean_u2n_wgt0_samples, mean_u2n_wgt0_ns
     }
   }
 ' "$output_raw" | sort -t',' -k1,1n -k2,2n -k3,3n > "$output_summary"
