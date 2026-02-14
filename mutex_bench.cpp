@@ -25,22 +25,6 @@ inline uint64_t ReadTsc() {
 #endif
 }
 
-inline void PollUntilDeadline(const Clock::time_point &deadline) {
-  constexpr auto kPollSleep = std::chrono::microseconds(100);
-  while (true) {
-    const auto now = Clock::now();
-    if (now >= deadline) {
-      break;
-    }
-    const auto remain = deadline - now;
-    if (remain > kPollSleep) {
-      std::this_thread::sleep_for(kPollSleep);
-    } else {
-      std::this_thread::yield();
-    }
-  }
-}
-
 struct Config {
   int threads = 4;
   uint64_t duration_ms = 1000;
@@ -276,26 +260,23 @@ int main(int argc, char *argv[]) {
   }
 
   while (workers_ready.load(std::memory_order_acquire) < cfg.threads) {
-    std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
   }
 
   warmup_start.store(true, std::memory_order_release);
   if (cfg.warmup_duration_ms > 0) {
-    const auto warmup_deadline =
-        Clock::now() + std::chrono::milliseconds(cfg.warmup_duration_ms);
-    PollUntilDeadline(warmup_deadline);
+    std::this_thread::sleep_for(std::chrono::milliseconds(cfg.warmup_duration_ms));
     warmup_stop.store(true, std::memory_order_release);
   }
 
   while (warmup_done.load(std::memory_order_acquire) < cfg.threads) {
-    std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
   }
 
   const auto start = Clock::now();
   const uint64_t tsc_start = ReadTsc();
   measure_start.store(true, std::memory_order_release);
-  const auto deadline = start + std::chrono::milliseconds(cfg.duration_ms);
-  PollUntilDeadline(deadline);
+  std::this_thread::sleep_for(std::chrono::milliseconds(cfg.duration_ms));
   measure_stop.store(true, std::memory_order_release);
 
   for (auto &th : workers) {
