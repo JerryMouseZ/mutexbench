@@ -43,7 +43,7 @@ struct Config {
       << "Usage: " << prog
       << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
       << " [--critical-iters N] [--outside-iters N] [--timing-sample-stride "
-         "N] [--lock-kind mutex|reciprocating|hapax|mcs]\n"
+         "N] [--lock-kind mutex|reciprocating|hapax|mcs|twa]\n"
       << "  --threads N       Number of worker threads (default: 4)\n"
       << "  --duration-ms N   Measurement duration in milliseconds (default: "
          "1000)\n"
@@ -54,7 +54,7 @@ struct Config {
       << "  --outside-iters N   Loop iterations outside lock (default: 100)\n"
       << "  --timing-sample-stride N  Measure timing every N ops (default: "
          "8)\n"
-      << "  --lock-kind K      Lock kind: mutex|reciprocating|hapax|mcs (default: "
+      << "  --lock-kind K      Lock kind: mutex|reciprocating|hapax|mcs|twa (default: "
          "mutex)\n";
   std::exit(1);
 }
@@ -107,7 +107,7 @@ Config ParseArgs(int argc, char *argv[]) {
       const std::string lock_kind = need_next("--lock-kind");
       if (!locks_bench::TryParseLockKind(lock_kind, cfg.lock_kind)) {
         std::cerr << "Invalid value for --lock-kind: " << lock_kind
-                  << " (expected: mutex, reciprocating, hapax, or mcs)\n";
+                  << " (expected: mutex, reciprocating, hapax, mcs, or twa)\n";
         std::exit(1);
       }
     } else if (arg == "--help" || arg == "-h") {

@@ -27,6 +27,8 @@ Options:
                                3) mcs=/path/to/interpose_custom.sh
                                4) mcs (resolved as $FLEXGUARD_DIR/build/interpose_mcs.sh)
                                5) lb_simple (run benchmark with LD_PRELOAD=liblb_simple.so)
+                               6) native:<kind> where <kind> is one of
+                                  mutex|reciprocating|hapax|mcs|twa
                              For lb_simple library path:
                                1) use $LB_SIMPLE_LIB if set
                                2) else <repo>/target/release/liblb_simple.so
@@ -284,7 +286,22 @@ for item in "${lock_items[@]}"; do
       mutex|native-mutex)
         lock_kind="native"
         lock_name="mutex"
+        bench_lock_kind="mutex"
         lock_script=""
+        ;;
+      native:*)
+        lock_kind="native"
+        lock_script=""
+        bench_lock_kind="${item#native:}"
+        case "$bench_lock_kind" in
+          mutex|reciprocating|hapax|mcs|twa)
+            lock_name="$bench_lock_kind"
+            ;;
+          *)
+            echo "Invalid native lock kind in item: $item" >&2
+            exit 1
+            ;;
+        esac
         ;;
       lb_simple)
         lock_kind="lb_simple"
@@ -310,6 +327,9 @@ for item in "${lock_items[@]}"; do
   if [[ -z "$lock_name" || ( "$lock_kind" == "hook" && -z "$lock_script" ) ]]; then
     echo "Invalid lock item: $item" >&2
     exit 1
+  fi
+  if [[ "$lock_kind" == "native" && -z "${bench_lock_kind:-}" ]]; then
+    bench_lock_kind="mutex"
   fi
   if [[ "$lock_name" =~ [^A-Za-z0-9._-] ]]; then
     echo "Invalid lock name '$lock_name' in item: $item" >&2
@@ -345,6 +365,7 @@ for item in "${lock_items[@]}"; do
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
+      --lock-kind "$bench_lock_kind"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
@@ -386,7 +407,11 @@ for item in "${lock_items[@]}"; do
     run_cmd=(sudo -- "${cmd[@]}")
   fi
 
-  echo "=== lock=${lock_name} kind=${lock_kind} sudo=${should_sudo} ===" >&2
+  if [[ "$lock_kind" == "native" ]]; then
+    echo "=== lock=${lock_name} kind=${lock_kind} bench_lock_kind=${bench_lock_kind} sudo=${should_sudo} ===" >&2
+  else
+    echo "=== lock=${lock_name} kind=${lock_kind} sudo=${should_sudo} ===" >&2
+  fi
   printf 'Command:' >&2
   printf ' %q' "${run_cmd[@]}" >&2
   printf '\n' >&2

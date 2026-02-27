@@ -23,6 +23,7 @@ Options:
   --duration-ms N              measurement duration in ms (default: 1000)
   --warmup-duration-ms N       warmup duration in ms (default: 0)
   --timing-sample-stride N     timing sample stride (default: 8)
+  --lock-kind K                lock kind: mutex|reciprocating|hapax|mcs|twa (default: mutex)
   --repeats N                  runs per parameter point (default: 3)
   --output-raw PATH            raw per-run CSV (default: <mutexbench>/throughput_sweep_raw.csv)
   --output-summary PATH        aggregated CSV (default: <mutexbench>/throughput_sweep_summary.csv)
@@ -48,6 +49,7 @@ outside_iters_csv="10,50,100,200,500,1000,2000"
 duration_ms="2000"
 warmup_duration_ms="50"
 timing_sample_stride="8"
+lock_kind="mutex"
 repeats="3"
 output_raw="$MUTEXBENCH_DIR/throughput_sweep_raw.csv"
 output_summary="$MUTEXBENCH_DIR/throughput_sweep_summary.csv"
@@ -84,6 +86,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --timing-sample-stride)
       timing_sample_stride="${2:-}"
+      shift 2
+      ;;
+    --lock-kind)
+      lock_kind="${2:-}"
       shift 2
       ;;
     --repeats)
@@ -259,6 +265,14 @@ if ! is_uint "$timing_sample_stride" || [[ "$timing_sample_stride" -eq 0 ]]; the
   echo "--timing-sample-stride must be an integer > 0" >&2
   exit 1
 fi
+case "$lock_kind" in
+  mutex|reciprocating|hapax|mcs|twa)
+    ;;
+  *)
+    echo "--lock-kind must be one of: mutex, reciprocating, hapax, mcs, twa" >&2
+    exit 1
+    ;;
+esac
 if ! is_uint "$repeats" || [[ "$repeats" -eq 0 ]]; then
   echo "--repeats must be an integer > 0" >&2
   exit 1
@@ -313,11 +327,12 @@ for t in "${threads[@]}"; do
     for o in "${outside_iters[@]}"; do
       for ((r = 1; r <= repeats; ++r)); do
         current_run=$((current_run + 1))
-        echo "[${current_run}/${total_runs}] threads=${t} critical=${c} outside=${o} repeat=${r} duration_ms=${duration_ms} warmup_duration_ms=${warmup_duration_ms}" >&2
+        echo "[${current_run}/${total_runs}] lock_kind=${lock_kind} threads=${t} critical=${c} outside=${o} repeat=${r} duration_ms=${duration_ms} warmup_duration_ms=${warmup_duration_ms}" >&2
 
         bench_cmd=(
           "$binary"
           --threads "$t"
+          --lock-kind "$lock_kind"
           --duration-ms "$duration_ms"
           --warmup-duration-ms "$warmup_duration_ms"
           --critical-iters "$c"
