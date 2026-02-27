@@ -22,7 +22,6 @@ struct HapaxVW {
   std::array<Slot, kSlotCount> Waiting{};
   std::atomic<std::uint64_t> Arrive{0}; // ingress
   std::atomic<std::uint64_t> Depart{0}; // egress
-  inline static std::atomic<std::uint64_t> NextToken{1};
 
   [[nodiscard]] static inline std::uint64_t Mix(std::uint64_t x) {
     x ^= x >> 33;
@@ -34,16 +33,39 @@ struct HapaxVW {
   }
 
   [[nodiscard]] inline Slot *ToSlot(std::uint64_t hapax) {
-    std::size_t idx = static_cast<std::size_t>(Mix(hapax) & (kSlotCount - 1));
-    return &Waiting[idx];
+    static constexpr std::uint32_t ArraySize = 4096;
+    static_assert(ArraySize > 0 && (ArraySize & (ArraySize - 1)) == 0,
+                  "ArraySize must be a power of two");
+    alignas(4096) static Slot WaitingArray[ArraySize]{};
+
+    const auto salt =
+        static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(this));
+    const std::uint32_t ix =
+        ((salt + static_cast<std::uint32_t>(hapax >> 16)) * 17u) &
+        (ArraySize - 1u);
+    return WaitingArray + ix;
   }
 
   [[nodiscard]] static inline std::uint64_t NextHapax() {
-    std::uint64_t hapax = NextToken.fetch_add(1, std::memory_order_relaxed);
-    if (hapax == 0) {
-      hapax = NextToken.fetch_add(1, std::memory_order_relaxed);
+    static constinit thread_local std::uint64_t PrivateHapax = 0;
+    alignas(128) static constinit std::atomic<std::uint64_t> HapaxAllocator{0};
+
+    // Create a unique hapax identity value.
+    // Hapax is single-use and specific to this thread, this lock, and
+    // this lock-unlock episode.
+    std::uint64_t hapax = PrivateHapax++;
+    if ((hapax & 0xFFFFu) == 0) [[unlikely]] {
+      // Current block of hapax values is exhausted so must reprovision.
+      // High 48-bits of the 64-bit hapax encode the thread "zone" and the
+      // low 16 are the sub-sequence from which the thread can allocate locally.
+      hapax = HapaxAllocator.fetch_add(1, std::memory_order_relaxed) + 1;
       assert(hapax != 0);
+      hapax <<= 16;
+      assert(hapax > PrivateHapax);
+      PrivateHapax = hapax + 1;
     }
+
+    assert(hapax != 0); // by convention, 0 is reserved
     return hapax;
   }
 
