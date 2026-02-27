@@ -22,3 +22,4 @@ Thumbs.db
 run_simple.sh
 .cache
 compile_commands.json
+.claude/worktrees
