@@ -5,6 +5,7 @@
 
 #include "hapax_lock_bench.hpp"
 #include "lock_kind.hpp"
+#include "mcs_lock_bench.hpp"
 #include "reciprocating_lock_bench.hpp"
 #include "std_mutex_lock_bench.hpp"
 
@@ -18,6 +19,8 @@ template <typename Fn> decltype(auto) DispatchByLockKind(LockKind kind, Fn &&fn)
     return std::forward<Fn>(fn).template operator()<ReciprocatingLockBench>();
   case LockKind::kHapax:
     return std::forward<Fn>(fn).template operator()<HapaxLockBench>();
+  case LockKind::kMcs:
+    return std::forward<Fn>(fn).template operator()<McsLockBench>();
   }
   std::abort();
 }
