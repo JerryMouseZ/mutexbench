@@ -18,3 +18,5 @@ curve_bench
 # Editors / OS
 .DS_Store
 Thumbs.db
+
+run_simple.sh
