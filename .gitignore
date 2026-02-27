@@ -20,3 +20,5 @@ curve_bench
 Thumbs.db
 
 run_simple.sh
+.cache
+compile_commands.json

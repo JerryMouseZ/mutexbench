@@ -7,10 +7,13 @@
 #include <immintrin.h>
 #endif
 #include <iostream>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "bench/locks_bench/lock_bench.hpp"
+#include "bench/locks_bench/lock_dispatch.hpp"
+#include "bench/locks_bench/lock_kind.hpp"
 
 using Clock = std::chrono::steady_clock;
 
@@ -32,6 +35,7 @@ struct Config {
   uint64_t critical_iters = 100;
   uint64_t outside_iters = 100;
   uint64_t timing_sample_stride = 8;
+  locks_bench::LockKind lock_kind = locks_bench::LockKind::kMutex;
 };
 
 [[noreturn]] void PrintUsageAndExit(const char *prog) {
@@ -39,7 +43,7 @@ struct Config {
       << "Usage: " << prog
       << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
       << " [--critical-iters N] [--outside-iters N] [--timing-sample-stride "
-         "N]\n"
+         "N] [--lock-kind mutex|reciprocating]\n"
       << "  --threads N       Number of worker threads (default: 4)\n"
       << "  --duration-ms N   Measurement duration in milliseconds (default: "
          "1000)\n"
@@ -49,7 +53,9 @@ struct Config {
          "100)\n"
       << "  --outside-iters N   Loop iterations outside lock (default: 100)\n"
       << "  --timing-sample-stride N  Measure timing every N ops (default: "
-         "8)\n";
+         "8)\n"
+      << "  --lock-kind K      Lock kind: mutex|reciprocating (default: "
+         "mutex)\n";
   std::exit(1);
 }
 
@@ -97,6 +103,13 @@ Config ParseArgs(int argc, char *argv[]) {
     } else if (arg == "--timing-sample-stride") {
       cfg.timing_sample_stride = ParseU64(need_next("--timing-sample-stride"),
                                           "--timing-sample-stride");
+    } else if (arg == "--lock-kind") {
+      const std::string lock_kind = need_next("--lock-kind");
+      if (!locks_bench::TryParseLockKind(lock_kind, cfg.lock_kind)) {
+        std::cerr << "Invalid value for --lock-kind: " << lock_kind
+                  << " (expected: mutex or reciprocating)\n";
+        std::exit(1);
+      }
     } else if (arg == "--help" || arg == "-h") {
       PrintUsageAndExit(argv[0]);
     } else {
@@ -127,10 +140,10 @@ inline void BurnIters(uint64_t iters) {
   }
 }
 
-int main(int argc, char *argv[]) {
-  Config cfg = ParseArgs(argc, argv);
+template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
+  static_assert(locks_bench::LockBench<LockBenchT>);
 
-  std::mutex mu;
+  LockBenchT lock_bench;
   uint64_t protected_counter = 0;
   std::atomic<uint64_t> total_ops{0};
   std::atomic<uint64_t> total_lock_hold_cycles{0};
@@ -147,7 +160,7 @@ int main(int argc, char *argv[]) {
   std::atomic<bool> warmup_stop{false};
   std::atomic<bool> measure_start{false};
   std::atomic<bool> measure_stop{false};
-  // Protected by mu; tracks the unlock timestamp of the previous lock owner.
+  // Protected by lock_bench; tracks unlock timestamp of previous lock owner.
   uint64_t global_last_before_unlock = 0;
   bool has_global_last_before_unlock = false;
 
@@ -173,10 +186,9 @@ int main(int argc, char *argv[]) {
       if (cfg.warmup_duration_ms > 0) {
         while (!warmup_stop.load(std::memory_order_acquire)) {
           lock_waiters.fetch_add(1, std::memory_order_relaxed);
-          {
-            std::lock_guard<std::mutex> lock(mu);
-            BurnIters(cfg.critical_iters);
-          }
+          auto guard_state = lock_bench.lock();
+          BurnIters(cfg.critical_iters);
+          lock_bench.unlock(guard_state);
           lock_waiters.fetch_sub(1, std::memory_order_relaxed);
           BurnIters(cfg.outside_iters);
         }
@@ -199,25 +211,27 @@ int main(int argc, char *argv[]) {
         } else {
           --sample_countdown;
         }
+
         uint64_t after_lock = 0;
         uint64_t before_unlock = 0;
         uint64_t prev_global_before_unlock = 0;
         bool has_prev_global_before_unlock = false;
-        {
-          std::lock_guard<std::mutex> lock(mu);
-          if (do_timing_sample) {
-            after_lock = ReadTsc();
-            if (has_global_last_before_unlock) {
-              prev_global_before_unlock = global_last_before_unlock;
-              has_prev_global_before_unlock = true;
-            }
+
+        auto guard_state = lock_bench.lock();
+        if (do_timing_sample) {
+          after_lock = ReadTsc();
+          if (has_global_last_before_unlock) {
+            prev_global_before_unlock = global_last_before_unlock;
+            has_prev_global_before_unlock = true;
           }
-          BurnIters(cfg.critical_iters);
-          ++protected_counter;
-          before_unlock = ReadTsc();
-          global_last_before_unlock = before_unlock;
-          has_global_last_before_unlock = true;
         }
+        BurnIters(cfg.critical_iters);
+        ++protected_counter;
+        before_unlock = ReadTsc();
+        global_last_before_unlock = before_unlock;
+        has_global_last_before_unlock = true;
+        lock_bench.unlock(guard_state);
+
         lock_waiters.fetch_sub(1, std::memory_order_relaxed);
         if (do_timing_sample) {
           if (has_prev_global_before_unlock &&
@@ -265,7 +279,8 @@ int main(int argc, char *argv[]) {
 
   warmup_start.store(true, std::memory_order_release);
   if (cfg.warmup_duration_ms > 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(cfg.warmup_duration_ms));
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(cfg.warmup_duration_ms));
     warmup_stop.store(true, std::memory_order_release);
   }
 
@@ -346,7 +361,9 @@ int main(int argc, char *argv[]) {
                 static_cast<double>(ops)
           : 0.0;
 
-  std::cout << "=== Mutex Benchmark ===\n";
+  std::cout << "=== Lock Benchmark ===\n";
+  std::cout << "lock_kind: " << locks_bench::LockKindToString(cfg.lock_kind)
+            << "\n";
   std::cout << "threads: " << cfg.threads << "\n";
   std::cout << "duration_ms: " << cfg.duration_ms << "\n";
   std::cout << "warmup_duration_ms: " << cfg.warmup_duration_ms << "\n";
@@ -374,4 +391,12 @@ int main(int argc, char *argv[]) {
   std::cout << "avg_waiters_before_lock: " << avg_waiters_before_lock << "\n";
 
   return 0;
+}
+
+int main(int argc, char *argv[]) {
+  Config cfg = ParseArgs(argc, argv);
+  return locks_bench::DispatchByLockKind(
+      cfg.lock_kind, [&]<typename LockBenchT>() {
+        return RunBenchmarkForLock<LockBenchT>(cfg);
+      });
 }
