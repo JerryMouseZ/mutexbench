@@ -61,7 +61,9 @@ struct HapaxVW {
       hapax = HapaxAllocator.fetch_add(1, std::memory_order_relaxed) + 1;
       assert(hapax != 0);
       hapax <<= 16;
-      assert(hapax > PrivateHapax);
+      // PrivateHapax was post-incremented above; equality means normal
+      // contiguous rollover into the next 16-bit sub-sequence.
+      assert(hapax + 1 >= PrivateHapax);
       PrivateHapax = hapax + 1;
     }
 
