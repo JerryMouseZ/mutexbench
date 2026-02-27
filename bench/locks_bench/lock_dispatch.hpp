@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <utility>
 
+#include "clh_lock_bench.hpp"
 #include "hapax_lock_bench.hpp"
 #include "lock_kind.hpp"
 #include "mcs_lock_bench.hpp"
@@ -24,6 +25,8 @@ template <typename Fn> decltype(auto) DispatchByLockKind(LockKind kind, Fn &&fn)
     return std::forward<Fn>(fn).template operator()<McsLockBench>();
   case LockKind::kTwa:
     return std::forward<Fn>(fn).template operator()<TwaLockBench>();
+  case LockKind::kClh:
+    return std::forward<Fn>(fn).template operator()<ClhLockBench>();
   }
   std::abort();
 }
