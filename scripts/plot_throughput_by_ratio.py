@@ -122,20 +122,46 @@ def get_tp_interp(data: dict, lock: str, threads: int, crit: int,
 # ── 自动选取 crit 值（覆盖不同 ratio 区间） ──────────────────────────────────
 
 def auto_select_crits(crit_values: list[int], out: int, n: int = 5) -> list[int]:
-    """从可用 crit 值中挑选 n 个，使 ratio 尽量均匀分布在 (0, 1)。"""
-    ratios = [c / (c + out) for c in crit_values]
-    targets = [(i + 1) / (n + 1) for i in range(n)]
-    selected = []
+    """从可用 crit 值中挑选 n 个，使 ratio 尽量均匀分布在 (0, 1)。
+
+    策略：
+    1. 优先从 ratio >= min_ratio（= 1/(n+1)）的候选中按均匀目标匹配。
+    2. 仍不足 n 个时，从低于 min_ratio 的剩余值里按 ratio 从大到小补充
+       （即优先选最接近已覆盖区间的有意义的值，如 crit=200 而非 crit=10）。
+    """
+    min_ratio = 1 / (n + 1)
+    targets   = [(i + 1) / (n + 1) for i in range(n)]
+
+    primary   = [c for c in crit_values if c / (c + out) >= min_ratio]
+    secondary = sorted(                          # ratio 从大到小
+        (c for c in crit_values if c / (c + out) < min_ratio),
+        key=lambda c: c / (c + out),
+        reverse=True,
+    )
+
+    selected: list[int] = []
+
+    # 第一步：在 primary 中为每个目标找最优匹配（允许同一 crit 只入选一次）
+    pool = list(primary)
     for target in targets:
-        best = min(crit_values, key=lambda c: abs(c / (c + out) - target))
-        if best not in selected:
-            selected.append(best)
-    # 若去重后不足 n 个，补充剩余
-    for c in crit_values:
+        if not pool:
+            break
+        best = min(pool, key=lambda c: abs(c / (c + out) - target))
+        selected.append(best)
+        pool.remove(best)
+
+    # 第二步：primary 中未被选中的值按 ratio 降序补充
+    for c in sorted(pool, key=lambda c: c / (c + out), reverse=True):
         if len(selected) >= n:
             break
-        if c not in selected:
-            selected.append(c)
+        selected.append(c)
+
+    # 第三步：仍不足时，从 secondary 按 ratio 降序补充
+    for c in secondary:
+        if len(selected) >= n:
+            break
+        selected.append(c)
+
     return sorted(selected)
 
 
