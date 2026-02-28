@@ -25,3 +25,6 @@ compile_commands.json
 .claude/worktrees
 .dmux/
 .dmux-hooks
+
+results
+results-*
