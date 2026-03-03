@@ -6,6 +6,10 @@
 #include <thread>
 #include <utility>
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
+
 struct ReciprocatingLock {
   struct alignas(128) WaitElement {
     std::atomic<WaitElement *> Gate{nullptr};
@@ -37,7 +41,7 @@ struct ReciprocatingLock {
 
     WaitElement *tail = Arrivals.exchange(&E, std::memory_order_acq_rel);
     assert(tail != &E);
-    if (tail != nullptr) {
+    if (tail != nullptr) [[unlikely]] {
       // Coerce LOCKEDEMPTY to nullptr by masking out the low bit.
       state.succ = reinterpret_cast<WaitElement *>(
           reinterpret_cast<std::uintptr_t>(tail) &
@@ -50,7 +54,11 @@ struct ReciprocatingLock {
         if (state.eos != nullptr) {
           break;
         }
+#if defined(__x86_64__) || defined(__i386__)
+        _mm_pause();
+#else
         std::this_thread::yield();
+#endif
       }
 
       assert(state.eos != &E);
@@ -76,7 +84,7 @@ struct ReciprocatingLock {
     assert(Arrivals.load(std::memory_order_acquire) != nullptr);
 
     // Release phase.
-    if (succ != nullptr) {
+    if (succ != nullptr) [[likely]] {
       assert(eos != self);
       assert(succ->Gate.load(std::memory_order_relaxed) == nullptr);
       succ->Gate.store(eos, std::memory_order_release);

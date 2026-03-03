@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <cassert>
 #include <concepts>
@@ -9,41 +8,31 @@
 #include <functional>
 #include <thread>
 #include <utility>
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
 
 struct HapaxVW {
   struct alignas(64) Slot {
     std::atomic<std::uint64_t> VisibleWaiter{0};
   };
 
-  static constexpr std::size_t kSlotCount = 256;
-  static_assert((kSlotCount & (kSlotCount - 1)) == 0,
-                "kSlotCount must be a power of two");
+  static constexpr std::uint32_t kWaitingArraySize = 4096;
+  static_assert(kWaitingArraySize > 0 &&
+                    (kWaitingArraySize & (kWaitingArraySize - 1)) == 0,
+                "kWaitingArraySize must be a power of two");
 
-  std::array<Slot, kSlotCount> Waiting{};
-  std::atomic<std::uint64_t> Arrive{0}; // ingress
-  std::atomic<std::uint64_t> Depart{0}; // egress
-
-  [[nodiscard]] static inline std::uint64_t Mix(std::uint64_t x) {
-    x ^= x >> 33;
-    x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33;
-    x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-    return x;
-  }
+  alignas(64) std::atomic<std::uint64_t> Arrive{0}; // ingress
+  alignas(64) std::atomic<std::uint64_t> Depart{0}; // egress
 
   [[nodiscard]] inline Slot *ToSlot(std::uint64_t hapax) {
-    static constexpr std::uint32_t ArraySize = 4096;
-    static_assert(ArraySize > 0 && (ArraySize & (ArraySize - 1)) == 0,
-                  "ArraySize must be a power of two");
-    alignas(4096) static Slot WaitingArray[ArraySize]{};
-
+    alignas(4096) static Slot waiting_array[kWaitingArraySize]{};
     const auto salt =
         static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(this));
     const std::uint32_t ix =
         ((salt + static_cast<std::uint32_t>(hapax >> 16)) * 17u) &
-        (ArraySize - 1u);
-    return WaitingArray + ix;
+        (kWaitingArraySize - 1u);
+    return waiting_array + ix;
   }
 
   [[nodiscard]] static inline std::uint64_t NextHapax() {
@@ -71,7 +60,15 @@ struct HapaxVW {
     return hapax;
   }
 
-  static inline void Pause() { std::this_thread::yield(); }
+  static inline void Pause(std::uint32_t spin_count) {
+#if defined(__x86_64__) || defined(__i386__)
+    _mm_pause();
+#else
+    if ((spin_count & 0xFFu) == 0) {
+      std::this_thread::yield();
+    }
+#endif
+  }
 
 public:
   struct LockState {
@@ -92,8 +89,9 @@ public:
               expected, pred, std::memory_order_acq_rel,
               std::memory_order_acquire)) {
         // Collision on the visible-waiter slot; wait via global depart value.
+        std::uint32_t spin_count = 0;
         while (Depart.load(std::memory_order_acquire) != pred) {
-          Pause();
+          Pause(++spin_count);
         }
       } else if (Depart.load(std::memory_order_acquire) == pred) {
         // Raced with unlock(); release the slot and proceed.
@@ -102,8 +100,9 @@ public:
             expected, 0, std::memory_order_acq_rel, std::memory_order_acquire);
       } else {
         // Preferred path: wait to be handed over via this slot.
+        std::uint32_t spin_count = 0;
         while (slot->VisibleWaiter.load(std::memory_order_acquire) == pred) {
-          Pause();
+          Pause(++spin_count);
         }
       }
     }
