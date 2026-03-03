@@ -1,0 +1,19 @@
+CompileFlags:
+  Add:
+    - -std=c++20
+    - -pthread
+  Remove:
+    # Override parent .clangd BPF target — this project is native C++
+    - --target=bpf
+    - -D__BPF__
+    - -D__BPF_TRACING__
+    - -D__TARGET_ARCH_x86
+    - -Wno-unknown-attributes
+    - -Wno-visibility
+    - -Wno-address-of-packed-member
+    - -Wno-compare-distinct-pointer-types
+    - -Wno-gnu-variable-sized-type-not-at-end
+    - -Wno-pointer-sign
+    - -Wno-pragma-once-outside-header
+    - -Wno-unused-value
+  Compiler: g++
