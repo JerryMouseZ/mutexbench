@@ -45,6 +45,10 @@ Options:
                              all: sudo for every lock run
                              auto: sudo only for flexguard*/hybridlock*/lb_simple locks
                              none: never sudo
+  --with-scx-lavd            Run scx_lavd in background for the whole sweep:
+                               sudo /mnt/home/jz/scx/target/release/scx_lavd --per-cpu-dsq --performance
+                             It will be stopped after all locks finish.
+  --scx-lavd-bin PATH        scx_lavd binary path (default: /mnt/home/jz/scx/target/release/scx_lavd)
   --lb-simple-sched-ext-conflict MODE
                              MODE in {stop,error,ignore} (default: stop)
                              How to handle active sched_ext before lb_simple:
@@ -386,10 +390,151 @@ should_auto_sudo() {
   return 1
 }
 
+scx_lavd_started="0"
+scx_lavd_pid=""
+declare -a scx_lavd_cmd=()
+
+stop_scx_lavd_if_started() {
+  if [[ "$scx_lavd_started" != "1" ]]; then
+    return 0
+  fi
+
+  echo "[scx_lavd] Stopping background scheduler..." >&2
+  if [[ -n "$scx_lavd_pid" ]]; then
+    run_with_optional_sudo "yes" kill -TERM "$scx_lavd_pid" >/dev/null 2>&1 || true
+  fi
+
+  local i=0
+  for ((i = 0; i < 50; ++i)); do
+    if [[ -z "$scx_lavd_pid" ]] || ! run_with_optional_sudo "yes" kill -0 "$scx_lavd_pid" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [[ -n "$scx_lavd_pid" ]] && run_with_optional_sudo "yes" kill -0 "$scx_lavd_pid" >/dev/null 2>&1; then
+    run_with_optional_sudo "yes" kill -KILL "$scx_lavd_pid" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$scx_lavd_pid" ]]; then
+    wait "$scx_lavd_pid" 2>/dev/null || true
+  fi
+
+  local state=""
+  local ops=""
+  state="$(sched_ext_state || true)"
+  if [[ "$state" == "enabled" ]]; then
+    ops="$(sched_ext_ops_name || true)"
+    local -A seen_owner_pids=()
+    local -a owner_pids=()
+    local id=""
+    local pid=""
+
+    while IFS= read -r id; do
+      [[ -z "$id" ]] && continue
+      while IFS= read -r pid; do
+        [[ -z "$pid" ]] && continue
+        [[ -n "${seen_owner_pids[$pid]:-}" ]] && continue
+        if run_with_optional_sudo "yes" kill -0 "$pid" >/dev/null 2>&1; then
+          seen_owner_pids["$pid"]=1
+          owner_pids+=("$pid")
+        fi
+      done < <(list_sched_ext_owner_pids_by_map_id "yes" "$id")
+    done < <(list_sched_ext_struct_ops_ids "yes")
+
+    if [[ ${#owner_pids[@]} -gt 0 ]]; then
+      echo "[scx_lavd] sched_ext still enabled (ops=${ops:-unknown}); stopping owner PIDs: ${owner_pids[*]}" >&2
+      for pid in "${owner_pids[@]}"; do
+        run_with_optional_sudo "yes" kill -TERM "$pid" >/dev/null 2>&1 || true
+      done
+
+      local i=0
+      for ((i = 0; i < 50; ++i)); do
+        state="$(sched_ext_state || true)"
+        if [[ "$state" != "enabled" ]]; then
+          break
+        fi
+        sleep 0.1
+      done
+
+      if [[ "$state" == "enabled" ]]; then
+        for pid in "${owner_pids[@]}"; do
+          run_with_optional_sudo "yes" kill -KILL "$pid" >/dev/null 2>&1 || true
+        done
+      fi
+    fi
+  fi
+
+  state="$(sched_ext_state || true)"
+  if [[ "$state" == "enabled" ]]; then
+    ops="$(sched_ext_ops_name || true)"
+    echo "[scx_lavd] Warning: sched_ext is still enabled after cleanup (ops=${ops:-unknown})." >&2
+  fi
+
+  scx_lavd_started="0"
+  scx_lavd_pid=""
+}
+
+start_scx_lavd() {
+  local scx_lavd_bin="$1"
+  local state=""
+  local ops=""
+
+  state="$(sched_ext_state || true)"
+  if [[ "$state" == "enabled" ]]; then
+    ops="$(sched_ext_ops_name || true)"
+    local owners="unknown"
+    owners="$(format_sched_ext_owner_diag "yes" || true)"
+    echo "Cannot start scx_lavd: sched_ext is already enabled (ops=${ops:-unknown}, owners=${owners})." >&2
+    echo "Stop existing sched_ext owner first." >&2
+    return 1
+  fi
+
+  scx_lavd_cmd=("$scx_lavd_bin" --per-cpu-dsq --performance)
+  echo "[scx_lavd] Starting background scheduler..." >&2
+  if [[ "$EUID" -ne 0 ]]; then
+    sudo -- "${scx_lavd_cmd[@]}" &
+  else
+    "${scx_lavd_cmd[@]}" &
+  fi
+  scx_lavd_pid="$!"
+  scx_lavd_started="1"
+
+  local i=0
+  for ((i = 0; i < 50; ++i)); do
+    if ! kill -0 "$scx_lavd_pid" >/dev/null 2>&1; then
+      wait "$scx_lavd_pid" 2>/dev/null || true
+      scx_lavd_started="0"
+      scx_lavd_pid=""
+      echo "scx_lavd exited before sched_ext became enabled." >&2
+      return 1
+    fi
+
+    state="$(sched_ext_state || true)"
+    if [[ "$state" == "enabled" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+
+  state="$(sched_ext_state || true)"
+  if [[ "$state" != "enabled" ]]; then
+    echo "scx_lavd did not enable sched_ext in time." >&2
+    stop_scx_lavd_if_started
+    return 1
+  fi
+
+  ops="$(sched_ext_ops_name || true)"
+  echo "[scx_lavd] Running (pid=${scx_lavd_pid}, ops=${ops:-unknown})." >&2
+  return 0
+}
+
 locks_csv=""
 sweep_script="$SCRIPT_DIR/sweep_mutex_throughput.sh"
 output_root="$MUTEXBENCH_DIR/results"
 sudo_mode="all"
+with_scx_lavd="0"
+scx_lavd_bin="/mnt/home/jz/scx/target/release/scx_lavd"
 lb_simple_sched_ext_conflict="stop"
 dry_run="0"
 declare -a sweep_args=()
@@ -410,6 +555,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sudo-mode)
       sudo_mode="${2:-}"
+      shift 2
+      ;;
+    --with-scx-lavd)
+      with_scx_lavd="1"
+      shift
+      ;;
+    --scx-lavd-bin)
+      scx_lavd_bin="${2:-}"
       shift 2
       ;;
     --lb-simple-sched-ext-conflict)
@@ -464,6 +617,16 @@ if [[ ! -x "$sweep_script" ]]; then
   echo "Sweep script is not executable: $sweep_script" >&2
   exit 1
 fi
+if [[ "$with_scx_lavd" == "1" ]]; then
+  scx_lavd_bin="$(resolve_executable_path "$scx_lavd_bin" "$MUTEXBENCH_DIR")"
+  if [[ ! -x "$scx_lavd_bin" ]]; then
+    echo "scx_lavd binary is not executable: $scx_lavd_bin" >&2
+    exit 1
+  fi
+  if [[ "$dry_run" != "1" ]]; then
+    trap stop_scx_lavd_if_started EXIT
+  fi
+fi
 
 output_root="$(expand_home "$output_root")"
 if [[ "$output_root" != /* ]]; then
@@ -476,6 +639,17 @@ IFS=',' read -r -a lock_items <<< "$locks_csv"
 if [[ ${#lock_items[@]} -eq 0 ]]; then
   echo "No lock scripts in --locks" >&2
   exit 1
+fi
+
+if [[ "$dry_run" == "1" && "$with_scx_lavd" == "1" ]]; then
+  scx_lavd_cmd=("$scx_lavd_bin" --per-cpu-dsq --performance)
+  if [[ "$EUID" -ne 0 ]]; then
+    scx_lavd_cmd=(sudo -- "${scx_lavd_cmd[@]}")
+  fi
+  echo "=== scx_lavd=enabled mode=background ===" >&2
+  printf 'Command:' >&2
+  printf ' %q' "${scx_lavd_cmd[@]}" >&2
+  printf '\n' >&2
 fi
 
 declare -A seen_names=()
@@ -568,6 +742,10 @@ for item in "${lock_items[@]}"; do
       exit 1
     fi
   elif [[ "$lock_kind" == "lb_simple" ]]; then
+    if [[ "$with_scx_lavd" == "1" ]]; then
+      echo "lock=lb_simple cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
+      exit 1
+    fi
     lb_simple_lib="$(resolve_lb_simple_lib_path)"
     if [[ ! -f "$lb_simple_lib" ]]; then
       echo "lb_simple library not found: $lb_simple_lib" >&2
@@ -644,6 +822,10 @@ for item in "${lock_items[@]}"; do
 
   if [[ "$dry_run" == "1" ]]; then
     continue
+  fi
+
+  if [[ "$with_scx_lavd" == "1" && "$scx_lavd_started" != "1" ]]; then
+    start_scx_lavd "$scx_lavd_bin"
   fi
 
   # Pre-create outputs as invoking user so post-run files stay user-editable.

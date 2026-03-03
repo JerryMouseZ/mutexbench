@@ -165,6 +165,37 @@ def auto_select_crits(crit_values: list[int], out: int, n: int = 5) -> list[int]
     return sorted(selected)
 
 
+# ── 表格打印 ─────────────────────────────────────────────────────────────────
+
+def print_table(data: dict, locks: list[str], out: int,
+                crits: list[int], out_values: list[int]) -> None:
+    """将绘图所用数据以表格形式打印到终端。
+
+    每个 crit 值对应一张子表：行为线程数，列为各锁的吞吐量（Mops/s）。
+    """
+    col_w = 12  # 数据列宽
+    thr_w = 8   # 线程列宽
+
+    for crit in crits:
+        ratio = crit / (crit + out)
+        print(f"\n=== ratio = {ratio:.2f}  (crit={crit}, out={out}) ===")
+
+        # 表头
+        header = f"{'Threads':>{thr_w}}" + "".join(f"{l:>{col_w}}" for l in locks)
+        sep    = "-" * len(header)
+        print(header)
+        print(sep)
+
+        for t in THREADS_LIST:
+            row = f"{t:>{thr_w}}"
+            for lock in locks:
+                val = get_tp_interp(data, lock, t, crit, out, out_values)
+                row += f"{val:>{col_w}.3f}" if val is not None else f"{'N/A':>{col_w}}"
+            print(row)
+
+    print()  # 末尾空行，与后续输出分隔
+
+
 # ── 绘图 ────────────────────────────────────────────────────────────────────
 
 def plot(data: dict, locks: list[str], colors: dict, markers: dict,
@@ -304,6 +335,7 @@ def main():
         hi = min((v for v in out_values if v > args.out), default=None)
         print(f"注意：out={args.out} 不在数据集中，将在 {lo} 和 {hi} 之间线性插值。")
 
+    print_table(data, locks, args.out, crits, out_values)
     plot(data, locks, colors, markers, args.out, crits, out_values, save_path, show)
 
 
