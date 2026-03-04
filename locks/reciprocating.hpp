@@ -1,9 +1,10 @@
 #include <atomic>
 #include <cassert>
-#include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -11,104 +12,121 @@
 #endif
 
 struct ReciprocatingLock {
+  // Listing 2: Element { atomic<int> Gate }
   struct alignas(128) WaitElement {
-    std::atomic<WaitElement *> Gate{nullptr};
+    std::atomic<int> Gate{0};
+    // Sequester/pad to 128B to reduce false sharing (as done in the paper's
+    // eval).
+    std::byte _pad[128 - sizeof(std::atomic<int>)];
   };
+  static_assert(alignof(WaitElement) == 128);
+  static_assert(sizeof(WaitElement) == 128);
 
+  // Listing 2: LOCKEDEMPTY = (Element*)uintptr_t(1)
   static inline WaitElement *const LOCKEDEMPTY =
       reinterpret_cast<WaitElement *>(static_cast<std::uintptr_t>(1));
 
-  // Arrivals encoding:
-  //   nullptr      -> unlocked
-  //   LOCKEDEMPTY  -> locked, arrival list empty
-  //   T|1          -> locked, arrival stack populated (T = newest arrival)
-  std::atomic<WaitElement *> Arrivals{nullptr};
+  // Listing 2: Lock { atomic<Element*> Arv; atomic<Element*> Terminus; Element*
+  // Succ; }
+  std::atomic<WaitElement *> Arv{nullptr};
+  std::atomic<WaitElement *> Terminus{nullptr};
+  WaitElement *Succ{nullptr}; // only touched by the current owner
 
-  struct LockState {
-    WaitElement *succ{nullptr};
-    WaitElement *eos{nullptr};
-    WaitElement *self{nullptr};
-  };
-
-  [[nodiscard]] inline LockState lock() {
-    // Acquire phase.
-    alignas(128) static thread_local WaitElement E{};
-    E.Gate.store(nullptr, std::memory_order_relaxed);
-
-    LockState state{};
-    state.self = &E;
-    state.eos = &E; // fast-path assumption
-
-    WaitElement *tail = Arrivals.exchange(&E, std::memory_order_acq_rel);
-    assert(tail != &E);
-    if (tail != nullptr) [[unlikely]] {
-      // Coerce LOCKEDEMPTY to nullptr by masking out the low bit.
-      state.succ = reinterpret_cast<WaitElement *>(
-          reinterpret_cast<std::uintptr_t>(tail) &
-          ~static_cast<std::uintptr_t>(1));
-      assert(state.succ != &E);
-
-      // Contended wait.
-      for (;;) {
-        state.eos = E.Gate.load(std::memory_order_acquire);
-        if (state.eos != nullptr) {
-          break;
-        }
+  static inline void Pause() noexcept {
 #if defined(__x86_64__) || defined(__i386__)
-        _mm_pause();
+    _mm_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    asm volatile("yield" ::: "memory");
 #else
-        std::this_thread::yield();
+    // Fallback (not ideal, but keeps portability).
+    std::this_thread::yield();
 #endif
-      }
-
-      assert(state.eos != &E);
-      if (state.succ == state.eos) {
-        // Logical end-of-segment marker.
-        state.succ = nullptr;
-        state.eos = LOCKEDEMPTY;
-      }
-    }
-
-    assert(state.eos != nullptr);
-    assert(Arrivals.load(std::memory_order_acquire) != nullptr);
-    return state;
   }
 
-  inline void unlock(LockState state) {
-    WaitElement *succ = state.succ;
-    WaitElement *eos = state.eos;
-    WaitElement *self = state.self;
+  // cas() helper that returns the previous value (as assumed by the paper).
+  static inline WaitElement *CasPrev(std::atomic<WaitElement *> &a,
+                                     WaitElement *expected,
+                                     WaitElement *desired) noexcept {
+    a.compare_exchange_strong(expected, desired, std::memory_order_seq_cst,
+                              std::memory_order_seq_cst);
+    // On success: expected is the old value; on failure: expected is the
+    // current/old value.
+    return expected;
+  }
 
-    assert(self != nullptr);
+  static inline WaitElement *UntagLowBit(WaitElement *p) noexcept {
+    return reinterpret_cast<WaitElement *>(reinterpret_cast<std::uintptr_t>(p) &
+                                           ~static_cast<std::uintptr_t>(1));
+  }
+
+  // Listing 2: Acquire(L)
+  inline void lock() {
+    static thread_local WaitElement E{};
+    E.Gate.store(0, std::memory_order_relaxed);
+
+    // returns previous tail
+    WaitElement *tail = Arv.exchange(&E, std::memory_order_seq_cst);
+    assert(tail != &E);
+
+    if (tail == nullptr) {
+      // Uncontended acquire -- fast-path return
+      Succ = nullptr;
+      Terminus.store(&E, std::memory_order_seq_cst);
+      return;
+    }
+
+    // Contention -- slow-path -- need to wait
+    WaitElement *succ = UntagLowBit(tail);
+    while (E.Gate.load(std::memory_order_acquire) == 0) {
+      Pause();
+    }
+
+    assert(Arv.load(std::memory_order_seq_cst) != nullptr);
+
+    WaitElement *eos = Terminus.load(std::memory_order_seq_cst);
+    assert(eos != nullptr && eos != &E);
+
+    if (tail == eos) {
+      // Detected logical end-of-segment : annul succ
+      Terminus.store(LOCKEDEMPTY, std::memory_order_seq_cst);
+      succ = nullptr;
+    }
+
+    Succ = succ;
+  }
+
+  // Listing 2: Release(L)
+  inline void unlock() {
+    assert(Arv.load(std::memory_order_seq_cst) != nullptr);
+
+    // case : normal succession within entry segment
+    WaitElement *succ = Succ;
+    if (succ != nullptr) {
+      succ->Gate.store(1, std::memory_order_release);
+      return;
+    }
+
+    // case : try uncontended fast-path
+    WaitElement *eos = Terminus.load(std::memory_order_seq_cst);
     assert(eos != nullptr);
-    assert(Arrivals.load(std::memory_order_acquire) != nullptr);
 
-    // Release phase.
-    if (succ != nullptr) [[likely]] {
-      assert(eos != self);
-      assert(succ->Gate.load(std::memory_order_relaxed) == nullptr);
-      succ->Gate.store(eos, std::memory_order_release);
+    WaitElement *v = CasPrev(Arv, eos, nullptr);
+    if (v == eos) {
       return;
     }
 
-    assert(eos == LOCKEDEMPTY || eos == self);
-    WaitElement *v = eos;
-    if (Arrivals.compare_exchange_strong(v, nullptr, std::memory_order_acq_rel,
-                                         std::memory_order_acquire)) {
-      return;
-    }
+    // case : detach arrival segment which becomes next entry segment
+    WaitElement *w = Arv.exchange(LOCKEDEMPTY, std::memory_order_seq_cst);
+    assert(w != nullptr && w != LOCKEDEMPTY && w != eos);
 
-    WaitElement *w = Arrivals.exchange(LOCKEDEMPTY, std::memory_order_acq_rel);
-    assert(w != nullptr && w != LOCKEDEMPTY && w != self);
-    assert(w->Gate.load(std::memory_order_relaxed) == nullptr);
-    w->Gate.store(eos, std::memory_order_release);
+    w->Gate.store(1, std::memory_order_release);
   }
 
   template <typename Fn>
     requires std::invocable<Fn &&>
   inline void operator+(Fn &&csfn) {
-    LockState state = lock();
+    lock();
     std::invoke(std::forward<Fn>(csfn));
-    unlock(state);
+    unlock();
   }
 };

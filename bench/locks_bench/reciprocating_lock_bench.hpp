@@ -5,11 +5,14 @@
 namespace locks_bench {
 
 struct ReciprocatingLockBench {
-  using GuardState = ReciprocatingLock::LockState;
+  struct GuardState {};
 
-  [[nodiscard]] GuardState lock() { return lock_.lock(); }
+  [[nodiscard]] GuardState lock() {
+    lock_.lock();
+    return {};
+  }
 
-  void unlock(GuardState &state) { lock_.unlock(state); }
+  void unlock(GuardState &) { lock_.unlock(); }
 
 private:
   ReciprocatingLock lock_;
