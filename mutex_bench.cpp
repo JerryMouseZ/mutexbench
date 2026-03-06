@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iomanip>
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -36,6 +37,8 @@ struct Config {
   uint64_t outside_iters = 100;
   uint64_t timing_sample_stride = 8;
   locks_bench::LockKind lock_kind = locks_bench::LockKind::kMutex;
+  locks_bench::TimesliceExtensionMode timeslice_extension_mode =
+      locks_bench::TimesliceExtensionMode::kOff;
 };
 
 [[noreturn]] void PrintUsageAndExit(const char *prog) {
@@ -43,7 +46,8 @@ struct Config {
       << "Usage: " << prog
       << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
       << " [--critical-iters N] [--outside-iters N] [--timing-sample-stride "
-         "N] [--lock-kind mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh]\n"
+         "N] [--lock-kind mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh]"
+      << " [--timeslice-extension off|auto|require]\n"
       << "  --threads N       Number of worker threads (default: 4)\n"
       << "  --duration-ms N   Measurement duration in milliseconds (default: "
          "1000)\n"
@@ -55,7 +59,8 @@ struct Config {
       << "  --timing-sample-stride N  Measure timing every N ops (default: "
          "8)\n"
       << "  --lock-kind K      Lock kind: mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh (default: "
-         "mutex)\n";
+         "mutex)\n"
+      << "  --timeslice-extension M  off|auto|require (default: off)\n";
   std::exit(1);
 }
 
@@ -110,6 +115,22 @@ Config ParseArgs(int argc, char *argv[]) {
                   << " (expected: mutex, reciprocating, hapax, mcs, mcs-tas, twa, or clh)\n";
         std::exit(1);
       }
+    } else if (arg == "--timeslice-extension") {
+      const std::string mode = need_next("--timeslice-extension");
+      if (mode == "off") {
+        cfg.timeslice_extension_mode =
+            locks_bench::TimesliceExtensionMode::kOff;
+      } else if (mode == "auto") {
+        cfg.timeslice_extension_mode =
+            locks_bench::TimesliceExtensionMode::kAuto;
+      } else if (mode == "require") {
+        cfg.timeslice_extension_mode =
+            locks_bench::TimesliceExtensionMode::kRequire;
+      } else {
+        std::cerr << "Invalid value for --timeslice-extension: " << mode
+                  << " (expected: off, auto, or require)\n";
+        std::exit(1);
+      }
     } else if (arg == "--help" || arg == "-h") {
       PrintUsageAndExit(argv[0]);
     } else {
@@ -143,7 +164,8 @@ inline void BurnIters(uint64_t iters) {
 template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   static_assert(locks_bench::LockBench<LockBenchT>);
 
-  LockBenchT lock_bench;
+  LockBenchT lock_bench(
+      locks_bench::LockBenchOptions{cfg.timeslice_extension_mode});
   uint64_t protected_counter = 0;
   std::atomic<uint64_t> total_ops{0};
   std::atomic<uint64_t> total_lock_hold_cycles{0};
@@ -169,6 +191,8 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
   for (int t = 0; t < cfg.threads; ++t) {
     workers.emplace_back([&, thread_index = t]() {
+      lock_bench.prepare_thread();
+
       uint64_t local_lock_hold_cycles = 0;
       uint64_t local_lock_hold_samples = 0;
       uint64_t local_unlock_to_next_lock_cycles_w0 = 0;
@@ -364,6 +388,10 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   std::cout << "=== Lock Benchmark ===\n";
   std::cout << "lock_kind: " << locks_bench::LockKindToString(cfg.lock_kind)
             << "\n";
+  std::cout << "timeslice_extension_mode: "
+            << locks_bench::TimesliceExtensionModeToString(
+                   cfg.timeslice_extension_mode)
+            << "\n";
   std::cout << "threads: " << cfg.threads << "\n";
   std::cout << "duration_ms: " << cfg.duration_ms << "\n";
   std::cout << "warmup_duration_ms: " << cfg.warmup_duration_ms << "\n";
@@ -395,6 +423,38 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
 int main(int argc, char *argv[]) {
   Config cfg = ParseArgs(argc, argv);
+
+  if (cfg.timeslice_extension_mode != locks_bench::TimesliceExtensionMode::kOff) {
+    const auto status =
+        locks_bench::CurrentThreadTimesliceExtensionStatus(
+            cfg.timeslice_extension_mode);
+    if (!status.enabled) {
+      if (cfg.timeslice_extension_mode ==
+          locks_bench::TimesliceExtensionMode::kRequire) {
+        std::cerr << "timeslice extension is required but unavailable";
+        if (status.reason != nullptr) {
+          std::cerr << ": " << status.reason;
+        }
+        if (status.error_number != 0) {
+          std::cerr << " (errno=" << status.error_number << ", "
+                    << std::strerror(status.error_number) << ")";
+        }
+        std::cerr << "\n";
+        return 1;
+      }
+      if (status.reason != nullptr) {
+        std::cerr << "Warning: timeslice extension is unavailable; "
+                     "continuing without it: "
+                  << status.reason;
+        if (status.error_number != 0) {
+          std::cerr << " (errno=" << status.error_number << ", "
+                    << std::strerror(status.error_number) << ")";
+        }
+        std::cerr << "\n";
+      }
+    }
+  }
+
   return locks_bench::DispatchByLockKind(
       cfg.lock_kind, [&]<typename LockBenchT>() {
         return RunBenchmarkForLock<LockBenchT>(cfg);

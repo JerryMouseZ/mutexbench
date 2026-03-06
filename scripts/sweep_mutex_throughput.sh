@@ -24,6 +24,7 @@ Options:
   --warmup-duration-ms N       warmup duration in ms (default: 0)
   --timing-sample-stride N     timing sample stride (default: 8)
   --lock-kind K                lock kind: mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh (default: mutex)
+  --timeslice-extension M      off|auto|require (default: off)
   --repeats N                  runs per parameter point (default: 3)
   --output-raw PATH            raw per-run CSV (default: <mutexbench>/throughput_sweep_raw.csv)
   --output-summary PATH        aggregated CSV (default: <mutexbench>/throughput_sweep_summary.csv)
@@ -50,6 +51,7 @@ duration_ms="2000"
 warmup_duration_ms="50"
 timing_sample_stride="8"
 lock_kind="mutex"
+timeslice_extension="off"
 repeats="3"
 output_raw="$MUTEXBENCH_DIR/throughput_sweep_raw.csv"
 output_summary="$MUTEXBENCH_DIR/throughput_sweep_summary.csv"
@@ -90,6 +92,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --lock-kind)
       lock_kind="${2:-}"
+      shift 2
+      ;;
+    --timeslice-extension)
+      timeslice_extension="${2:-}"
       shift 2
       ;;
     --repeats)
@@ -273,6 +279,14 @@ case "$lock_kind" in
     exit 1
     ;;
 esac
+case "$timeslice_extension" in
+  off|auto|require)
+    ;;
+  *)
+    echo "--timeslice-extension must be one of: off, auto, require" >&2
+    exit 1
+    ;;
+esac
 if ! is_uint "$repeats" || [[ "$repeats" -eq 0 ]]; then
   echo "--repeats must be an integer > 0" >&2
   exit 1
@@ -338,6 +352,7 @@ for t in "${threads[@]}"; do
           --critical-iters "$c"
           --outside-iters "$o"
           --timing-sample-stride "$timing_sample_stride"
+          --timeslice-extension "$timeslice_extension"
         )
         if [[ -n "$bench_ld_preload" ]]; then
           bench_output="$(env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}")"

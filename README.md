@@ -5,7 +5,7 @@
 
 ## 功能概览
 
-- 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`twa`、`clh`
+- 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`twa`、`clh`
 - 指标输出：吞吐量、锁内持有时间、解锁到下一次加锁时间、平均等待者数量
 - 扫频脚本：自动生成 `raw.csv`（逐次运行）与 `summary.csv`（聚合统计）
 - 多锁对比：支持内置锁、外部 interpose 脚本、`lb_simple` 预加载模式
@@ -60,7 +60,8 @@ make
   --critical-iters 100 \
   --outside-iters 100 \
   --timing-sample-stride 8 \
-  --lock-kind mutex
+  --lock-kind mutex \
+  --timeslice-extension auto
 ```
 
 常用参数：
@@ -71,13 +72,39 @@ make
 - `--critical-iters N`：临界区 Burn 循环次数
 - `--outside-iters N`：临界区外 Burn 循环次数
 - `--timing-sample-stride N`：每 N 次操作采样一次时延
-- `--lock-kind`：`mutex|reciprocating|hapax|mcs|twa|clh`
+- `--lock-kind`：`mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh`
+- `--timeslice-extension`：`off|auto|require`
+
+### 1.1) 使用 timeslice extension
+
+如果内核和 glibc 同时支持 RSEQ timeslice extension，可以在持锁临界区请求时间片延长，并在解锁后通过 `rseq_slice_yield()` 主动交还扩展时间片：
+
+```bash
+./mutex_bench \
+  --threads 32 \
+  --critical-iters 100 \
+  --outside-iters 100 \
+  --lock-kind mcs \
+  --timeslice-extension auto
+```
+
+模式说明：
+
+- `off`：关闭（默认）
+- `auto`：尝试启用；当前环境不支持时自动回退
+- `require`：必须启用；不支持时直接报错退出
+
+注意：
+
+- 该功能依赖线程已注册的 `rseq` 区域能够暴露 `slice_ctrl` 字段；旧 glibc 即使在新内核上也可能无法使用
+- 更适合用户态自旋/队列锁（如 `mcs`、`mcs-tas`、`clh`、`twa`、`hapax`、`reciprocating`）
 
 ### 2) 单锁参数扫频（输出 raw + summary）
 
 ```bash
 scripts/sweep_mutex_throughput.sh \
   --lock-kind mutex \
+  --timeslice-extension auto \
   --threads 1,2,4,8,16,32 \
   --critical-iters 10,50,100,200,500 \
   --outside-iters 10,50,100,200,500 \
