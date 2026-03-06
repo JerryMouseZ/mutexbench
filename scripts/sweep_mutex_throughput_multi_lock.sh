@@ -45,6 +45,7 @@ Options:
                              all: sudo for every lock run
                              auto: sudo only for flexguard*/hybridlock*/lb_simple locks
                              none: never sudo
+  --timeslice-extension M    off|auto|require (default: off)
   --with-scx-lavd            Run scx_lavd in background for the whole sweep:
                                sudo /mnt/home/jz/scx/target/release/scx_lavd --per-cpu-dsq --performance
                              It will be stopped after all locks finish.
@@ -533,6 +534,7 @@ locks_csv=""
 sweep_script="$SCRIPT_DIR/sweep_mutex_throughput.sh"
 output_root="$MUTEXBENCH_DIR/results"
 sudo_mode="all"
+timeslice_extension="off"
 with_scx_lavd="0"
 scx_lavd_bin="/mnt/home/jz/scx/target/release/scx_lavd"
 lb_simple_sched_ext_conflict="stop"
@@ -555,6 +557,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sudo-mode)
       sudo_mode="${2:-}"
+      shift 2
+      ;;
+    --timeslice-extension)
+      timeslice_extension="${2:-}"
       shift 2
       ;;
     --with-scx-lavd)
@@ -603,14 +609,24 @@ if contains_flag "--output-summary" "${sweep_args[@]}"; then
   echo "Do not pass --output-summary. It is generated per lock." >&2
   exit 1
 fi
+if contains_flag "--timeslice-extension" "${sweep_args[@]}"; then
+  echo "Do not pass --timeslice-extension through forwarded sweep args. Use the top-level flag instead." >&2
+  exit 1
+fi
 if [[ "$sudo_mode" != "all" && "$sudo_mode" != "auto" && "$sudo_mode" != "none" ]]; then
   echo "--sudo-mode must be one of: all, auto, none" >&2
+  exit 1
+fi
+if [[ "$timeslice_extension" != "off" && "$timeslice_extension" != "auto" && "$timeslice_extension" != "require" ]]; then
+  echo "--timeslice-extension must be one of: off, auto, require" >&2
   exit 1
 fi
 if [[ "$lb_simple_sched_ext_conflict" != "stop" && "$lb_simple_sched_ext_conflict" != "error" && "$lb_simple_sched_ext_conflict" != "ignore" ]]; then
   echo "--lb-simple-sched-ext-conflict must be one of: stop, error, ignore" >&2
   exit 1
 fi
+
+sweep_args+=(--timeslice-extension "$timeslice_extension")
 
 sweep_script="$(resolve_executable_path "$sweep_script" "$MUTEXBENCH_DIR")"
 if [[ ! -x "$sweep_script" ]]; then

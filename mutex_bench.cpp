@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <emmintrin.h>
 #include <iomanip>
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -58,7 +59,8 @@ struct Config {
       << "  --outside-iters N   Loop iterations outside lock (default: 100)\n"
       << "  --timing-sample-stride N  Measure timing every N ops (default: "
          "8)\n"
-      << "  --lock-kind K      Lock kind: mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh (default: "
+      << "  --lock-kind K      Lock kind: "
+         "mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh (default: "
          "mutex)\n"
       << "  --timeslice-extension M  off|auto|require (default: off)\n";
   std::exit(1);
@@ -112,7 +114,8 @@ Config ParseArgs(int argc, char *argv[]) {
       const std::string lock_kind = need_next("--lock-kind");
       if (!locks_bench::TryParseLockKind(lock_kind, cfg.lock_kind)) {
         std::cerr << "Invalid value for --lock-kind: " << lock_kind
-                  << " (expected: mutex, reciprocating, hapax, mcs, mcs-tas, twa, or clh)\n";
+                  << " (expected: mutex, reciprocating, hapax, mcs, mcs-tas, "
+                     "twa, or clh)\n";
         std::exit(1);
       }
     } else if (arg == "--timeslice-extension") {
@@ -170,21 +173,12 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   std::atomic<uint64_t> total_ops{0};
   std::atomic<uint64_t> total_lock_hold_cycles{0};
   std::atomic<uint64_t> total_lock_hold_samples{0};
-  std::atomic<uint64_t> total_unlock_to_next_lock_cycles_w0{0};
-  std::atomic<uint64_t> total_unlock_to_next_lock_samples_w0{0};
-  std::atomic<uint64_t> total_unlock_to_next_lock_cycles_w_gt0{0};
-  std::atomic<uint64_t> total_unlock_to_next_lock_samples_w_gt0{0};
-  std::atomic<int64_t> lock_waiters{0};
-  std::atomic<uint64_t> total_waiters_before_lock{0};
   std::atomic<int> workers_ready{0};
   std::atomic<int> warmup_done{0};
   std::atomic<bool> warmup_start{false};
   std::atomic<bool> warmup_stop{false};
   std::atomic<bool> measure_start{false};
   std::atomic<bool> measure_stop{false};
-  // Protected by lock_bench; tracks unlock timestamp of previous lock owner.
-  uint64_t global_last_before_unlock = 0;
-  bool has_global_last_before_unlock = false;
 
   std::vector<std::thread> workers;
   workers.reserve(static_cast<size_t>(cfg.threads));
@@ -195,11 +189,6 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
       uint64_t local_lock_hold_cycles = 0;
       uint64_t local_lock_hold_samples = 0;
-      uint64_t local_unlock_to_next_lock_cycles_w0 = 0;
-      uint64_t local_unlock_to_next_lock_samples_w0 = 0;
-      uint64_t local_unlock_to_next_lock_cycles_w_gt0 = 0;
-      uint64_t local_unlock_to_next_lock_samples_w_gt0 = 0;
-      uint64_t local_waiters_before_lock = 0;
       uint64_t local_ops = 0;
 
       workers_ready.fetch_add(1, std::memory_order_release);
@@ -209,26 +198,21 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
       if (cfg.warmup_duration_ms > 0) {
         while (!warmup_stop.load(std::memory_order_acquire)) {
-          lock_waiters.fetch_add(1, std::memory_order_relaxed);
           auto guard_state = lock_bench.lock();
           BurnIters(cfg.critical_iters);
           lock_bench.unlock(guard_state);
-          lock_waiters.fetch_sub(1, std::memory_order_relaxed);
           BurnIters(cfg.outside_iters);
         }
       }
 
       warmup_done.fetch_add(1, std::memory_order_release);
       while (!measure_start.load(std::memory_order_acquire)) {
-        std::this_thread::yield();
+        _mm_pause();
       }
 
       uint64_t sample_countdown =
           static_cast<uint64_t>(thread_index) % cfg.timing_sample_stride;
       while (!measure_stop.load(std::memory_order_acquire)) {
-        const int64_t waiters_before_lock =
-            lock_waiters.fetch_add(1, std::memory_order_relaxed);
-        local_waiters_before_lock += static_cast<uint64_t>(waiters_before_lock);
         const bool do_timing_sample = (sample_countdown == 0);
         if (sample_countdown == 0) {
           sample_countdown = cfg.timing_sample_stride - 1;
@@ -238,38 +222,19 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
         uint64_t after_lock = 0;
         uint64_t before_unlock = 0;
-        uint64_t prev_global_before_unlock = 0;
-        bool has_prev_global_before_unlock = false;
 
         auto guard_state = lock_bench.lock();
         if (do_timing_sample) {
           after_lock = ReadTsc();
-          if (has_global_last_before_unlock) {
-            prev_global_before_unlock = global_last_before_unlock;
-            has_prev_global_before_unlock = true;
-          }
         }
         BurnIters(cfg.critical_iters);
         ++protected_counter;
-        before_unlock = ReadTsc();
-        global_last_before_unlock = before_unlock;
-        has_global_last_before_unlock = true;
+        if (do_timing_sample) {
+          before_unlock = ReadTsc();
+        }
         lock_bench.unlock(guard_state);
 
-        lock_waiters.fetch_sub(1, std::memory_order_relaxed);
         if (do_timing_sample) {
-          if (has_prev_global_before_unlock &&
-              after_lock >= prev_global_before_unlock) {
-            const uint64_t delta_cycles =
-                (after_lock - prev_global_before_unlock);
-            if (waiters_before_lock == 0) {
-              local_unlock_to_next_lock_cycles_w0 += delta_cycles;
-              ++local_unlock_to_next_lock_samples_w0;
-            } else {
-              local_unlock_to_next_lock_cycles_w_gt0 += delta_cycles;
-              ++local_unlock_to_next_lock_samples_w_gt0;
-            }
-          }
           if (before_unlock >= after_lock) {
             local_lock_hold_cycles += (before_unlock - after_lock);
             ++local_lock_hold_samples;
@@ -283,16 +248,6 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
                                        std::memory_order_relaxed);
       total_lock_hold_samples.fetch_add(local_lock_hold_samples,
                                         std::memory_order_relaxed);
-      total_unlock_to_next_lock_cycles_w0.fetch_add(
-          local_unlock_to_next_lock_cycles_w0, std::memory_order_relaxed);
-      total_unlock_to_next_lock_samples_w0.fetch_add(
-          local_unlock_to_next_lock_samples_w0, std::memory_order_relaxed);
-      total_unlock_to_next_lock_cycles_w_gt0.fetch_add(
-          local_unlock_to_next_lock_cycles_w_gt0, std::memory_order_relaxed);
-      total_unlock_to_next_lock_samples_w_gt0.fetch_add(
-          local_unlock_to_next_lock_samples_w_gt0, std::memory_order_relaxed);
-      total_waiters_before_lock.fetch_add(local_waiters_before_lock,
-                                          std::memory_order_relaxed);
       total_ops.fetch_add(local_ops, std::memory_order_relaxed);
     });
   }
@@ -340,51 +295,18 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
       total_lock_hold_cycles.load(std::memory_order_relaxed);
   const uint64_t lock_hold_samples =
       total_lock_hold_samples.load(std::memory_order_relaxed);
-  const uint64_t unlock_to_next_lock_cycles_w0 =
-      total_unlock_to_next_lock_cycles_w0.load(std::memory_order_relaxed);
-  const uint64_t unlock_to_next_lock_samples_w0 =
-      total_unlock_to_next_lock_samples_w0.load(std::memory_order_relaxed);
-  const uint64_t unlock_to_next_lock_cycles_w_gt0 =
-      total_unlock_to_next_lock_cycles_w_gt0.load(std::memory_order_relaxed);
-  const uint64_t unlock_to_next_lock_samples_w_gt0 =
-      total_unlock_to_next_lock_samples_w_gt0.load(std::memory_order_relaxed);
-  const uint64_t waiters_before_lock_total =
-      total_waiters_before_lock.load(std::memory_order_relaxed);
   const double throughput = ops / elapsed_s;
   const double avg_lock_hold_cycles =
       lock_hold_samples ? static_cast<double>(lock_hold_cycles) /
                               static_cast<double>(lock_hold_samples)
                         : 0.0;
-  const double avg_unlock_to_next_lock_cycles_w0 =
-      unlock_to_next_lock_samples_w0
-          ? static_cast<double>(unlock_to_next_lock_cycles_w0) /
-                static_cast<double>(unlock_to_next_lock_samples_w0)
-          : 0.0;
-  const double avg_unlock_to_next_lock_cycles_w_gt0 =
-      unlock_to_next_lock_samples_w_gt0
-          ? static_cast<double>(unlock_to_next_lock_cycles_w_gt0) /
-                static_cast<double>(unlock_to_next_lock_samples_w_gt0)
-          : 0.0;
   const double avg_lock_hold_ns = avg_lock_hold_cycles * ns_per_cycle;
-  const double avg_unlock_to_next_lock_ns_w0 =
-      avg_unlock_to_next_lock_cycles_w0 * ns_per_cycle;
-  const double avg_unlock_to_next_lock_ns_w_gt0 =
-      avg_unlock_to_next_lock_cycles_w_gt0 * ns_per_cycle;
-  const uint64_t unlock_to_next_lock_samples_total =
-      unlock_to_next_lock_samples_w0 + unlock_to_next_lock_samples_w_gt0;
-  const double avg_unlock_to_next_lock_ns_all =
-      unlock_to_next_lock_samples_total
-          ? ((static_cast<double>(unlock_to_next_lock_samples_w0) *
-              avg_unlock_to_next_lock_ns_w0) +
-             (static_cast<double>(unlock_to_next_lock_samples_w_gt0) *
-              avg_unlock_to_next_lock_ns_w_gt0)) /
-                static_cast<double>(unlock_to_next_lock_samples_total)
-          : 0.0;
-  const double avg_waiters_before_lock =
-      ops ? static_cast<double>(waiters_before_lock_total) /
+  const double estimated_total_lock_hold_ns =
+      avg_lock_hold_ns * static_cast<double>(ops);
+  const double avg_lock_handoff_ns_estimated =
+      ops ? std::max(elapsed_ns - estimated_total_lock_hold_ns, 0.0) /
                 static_cast<double>(ops)
           : 0.0;
-
   std::cout << "=== Lock Benchmark ===\n";
   std::cout << "lock_kind: " << locks_bench::LockKindToString(cfg.lock_kind)
             << "\n";
@@ -406,28 +328,18 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   std::cout << "throughput_ops_per_sec: " << throughput << "\n";
   std::cout << "lock_hold_samples: " << lock_hold_samples << "\n";
   std::cout << "avg_lock_hold_ns: " << avg_lock_hold_ns << "\n";
-  std::cout << "unlock_to_next_lock_samples_w0: "
-            << unlock_to_next_lock_samples_w0 << "\n";
-  std::cout << "avg_unlock_to_next_lock_ns_w0: "
-            << avg_unlock_to_next_lock_ns_w0 << "\n";
-  std::cout << "unlock_to_next_lock_samples_w_gt0: "
-            << unlock_to_next_lock_samples_w_gt0 << "\n";
-  std::cout << "avg_unlock_to_next_lock_ns_w_gt0: "
-            << avg_unlock_to_next_lock_ns_w_gt0 << "\n";
-  std::cout << "avg_unlock_to_next_lock_ns_all: "
-            << avg_unlock_to_next_lock_ns_all << "\n";
-  std::cout << "avg_waiters_before_lock: " << avg_waiters_before_lock << "\n";
-
+  std::cout << "avg_lock_handoff_ns_estimated: "
+            << avg_lock_handoff_ns_estimated << "\n";
   return 0;
 }
 
 int main(int argc, char *argv[]) {
   Config cfg = ParseArgs(argc, argv);
 
-  if (cfg.timeslice_extension_mode != locks_bench::TimesliceExtensionMode::kOff) {
-    const auto status =
-        locks_bench::CurrentThreadTimesliceExtensionStatus(
-            cfg.timeslice_extension_mode);
+  if (cfg.timeslice_extension_mode !=
+      locks_bench::TimesliceExtensionMode::kOff) {
+    const auto status = locks_bench::CurrentThreadTimesliceExtensionStatus(
+        cfg.timeslice_extension_mode);
     if (!status.enabled) {
       if (cfg.timeslice_extension_mode ==
           locks_bench::TimesliceExtensionMode::kRequire) {

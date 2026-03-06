@@ -121,6 +121,7 @@ scripts/sweep_mutex_throughput.sh \
 scripts/sweep_mutex_throughput_multi_lock.sh \
   --locks mutex,mcs,clh \
   --sudo-mode none \
+  --timeslice-extension auto \
   --threads 1,2,4,8,16,32 \
   --critical-iters 10,50,100,200,500 \
   --outside-iters 10,50,100,200,500 \
