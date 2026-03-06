@@ -9,6 +9,7 @@ enum class LockKind {
   kReciprocating,
   kHapax,
   kMcs,
+  kMcsTas,
   kTwa,
   kClh,
 };
@@ -23,6 +24,8 @@ inline const char *LockKindToString(LockKind kind) {
     return "hapax";
   case LockKind::kMcs:
     return "mcs";
+  case LockKind::kMcsTas:
+    return "mcs-tas";
   case LockKind::kTwa:
     return "twa";
   case LockKind::kClh:
@@ -46,6 +49,10 @@ inline bool TryParseLockKind(const std::string &value, LockKind &out) {
   }
   if (value == "mcs") {
     out = LockKind::kMcs;
+    return true;
+  }
+  if (value == "mcs-tas" || value == "mcstas") {
+    out = LockKind::kMcsTas;
     return true;
   }
   if (value == "twa") {
