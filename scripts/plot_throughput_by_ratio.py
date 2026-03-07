@@ -299,6 +299,28 @@ def _style_axis(ax, ymax: float, yfmt: str = "%.2f") -> None:
     ax.spines[["left", "bottom"]].set_color("#CCCCCC")
 
 
+def _style_log_y_axis(ax, ymin: float, ymax: float) -> None:
+    safe_ymin = ymin if ymin > 0 else 1e-3
+    safe_ymax = ymax if ymax > safe_ymin else safe_ymin * 10
+
+    ax.set_yscale("log")
+    ax.set_ylim(safe_ymin, safe_ymax)
+
+    formatter = ticker.ScalarFormatter()
+    formatter.set_scientific(False)
+    formatter.set_useOffset(False)
+    ax.yaxis.set_major_locator(ticker.LogLocator(base=10))
+    ax.yaxis.set_major_formatter(formatter)
+    ax.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=range(2, 10)))
+    ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+
+    ax.tick_params(axis="y", labelsize=8.5)
+    ax.grid(True, which="major", linestyle=":", alpha=0.5, color="#DDDDDD", zorder=0)
+    ax.grid(True, which="minor", linestyle=":", alpha=0.25, color="#EEEEEE", zorder=0)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines[["left", "bottom"]].set_color("#CCCCCC")
+
+
 def plot(
     data: dict[str, list[dict[str, str]]],
     locks: list[str],
@@ -426,14 +448,19 @@ def plot_latency_breakdown(
                     for threads in THREADS_LIST
                 ]
                 series[lock] = ys
-                all_ys.extend(y for y in ys if y is not None)
+                all_ys.extend(y for y in ys if y is not None and y > 0)
 
+            ymin = min(all_ys) / 1.12 if all_ys else 1e-3
             ymax = max(all_ys) * 1.12 if all_ys else 1.0
             _configure_x_axis(ax, ymax, annotate_cpus=(row_index == 0))
 
             for lock in locks:
-                xs = [threads for threads, value in zip(THREADS_LIST, series[lock]) if value is not None]
-                ys = [value for value in series[lock] if value is not None]
+                xs = [
+                    threads
+                    for threads, value in zip(THREADS_LIST, series[lock])
+                    if value is not None and value > 0
+                ]
+                ys = [value for value in series[lock] if value is not None and value > 0]
                 ax.plot(
                     xs,
                     ys,
@@ -447,7 +474,7 @@ def plot_latency_breakdown(
                     zorder=3,
                 )
 
-            _style_axis(ax, ymax)
+            _style_log_y_axis(ax, ymin, ymax)
             if row_index == 0:
                 ax.set_title(
                     f"ratio = {ratio:.2f}  (crit={crit})",
