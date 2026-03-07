@@ -10,7 +10,7 @@ plot_throughput_by_ratio.py
     --out OUT     固定的非临界区迭代次数（默认 400）。
                   若 OUT 不在数据集中，则在相邻两个可用值之间线性插值。
     --data DIR    results 根目录（默认：脚本所在目录的上级 results-new/）。
-                  脚本会自动扫描该目录下含有 summary.csv 的子目录作为锁实现。
+                  脚本会自动扫描该目录下含有 summary.csv 或 raw.csv 的子目录作为锁实现。
     --save PATH   输出图片路径（默认：<data>/throughput_by_ratio.png）
     --crits C,…   逗号分隔的 critical_iters 列表（默认自动选 5 个）
     --no-show     不弹出交互式窗口（在无头环境下自动生效）
@@ -20,10 +20,18 @@ import argparse
 import csv
 import os
 import sys
+from collections import defaultdict
 
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+try:
+    import matplotlib
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as ticker
+except ModuleNotFoundError as exc:
+    if exc.name != "matplotlib":
+        raise
+    matplotlib = None
+    plt = None
+    ticker = None
 
 
 # ── 常量 ────────────────────────────────────────────────────────────────────
@@ -38,21 +46,37 @@ _MARKER_POOL = ["o", "s", "^", "D", "v", "P", "X", "*"]
 # 系统逻辑 CPU 数（用于参考线）
 NCPUS = 96
 
+_SUMMARY_REQUIRED = {
+    "threads",
+    "critical_iters",
+    "outside_iters",
+    "mean_throughput_ops_per_sec",
+}
+_RAW_REQUIRED = {
+    "threads",
+    "critical_iters",
+    "outside_iters",
+    "throughput_ops_per_sec",
+}
+
 
 # ── 数据加载 ─────────────────────────────────────────────────────────────────
 
 def discover_locks(data_dir: str) -> list[str]:
-    """扫描 data_dir 下含有 summary.csv 的子目录，返回排序后的锁名称列表。"""
+    """扫描 data_dir 下含有 summary.csv 或 raw.csv 的子目录。"""
     if not os.path.isdir(data_dir):
         sys.exit(f"Error: 数据目录不存在：{data_dir}")
     locks = sorted(
         entry.name
         for entry in os.scandir(data_dir)
         if entry.is_dir()
-        and os.path.isfile(os.path.join(entry.path, "summary.csv"))
+        and (
+            os.path.isfile(os.path.join(entry.path, "summary.csv"))
+            or os.path.isfile(os.path.join(entry.path, "raw.csv"))
+        )
     )
     if not locks:
-        sys.exit(f"Error: 在 {data_dir} 下未找到任何含 summary.csv 的子目录。")
+        sys.exit(f"Error: 在 {data_dir} 下未找到任何含 summary.csv 或 raw.csv 的子目录。")
     return locks
 
 
@@ -63,23 +87,93 @@ def build_styles(locks: list[str]) -> tuple[dict, dict]:
     return colors, markers
 
 
+def require_matplotlib() -> None:
+    if matplotlib is None or plt is None or ticker is None:
+        sys.exit(
+            "Error: 绘图需要 matplotlib，请先安装它，例如执行 "
+            "`python3 -m pip install matplotlib`。"
+        )
+
+
+def _read_csv_rows(path: str) -> tuple[list[str], list[dict[str, str]]]:
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        return list(reader.fieldnames or []), list(reader)
+
+
+def _aggregate_raw_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    grouped: dict[tuple[int, int, int], list[float]] = defaultdict(list)
+    for row in rows:
+        key = (
+            int(row["threads"]),
+            int(row["critical_iters"]),
+            int(row["outside_iters"]),
+        )
+        grouped[key].append(float(row["throughput_ops_per_sec"]))
+
+    out = []
+    for (threads, crit, outside), values in sorted(grouped.items()):
+        mean_tp = sum(values) / len(values)
+        out.append(
+            {
+                "threads": str(threads),
+                "critical_iters": str(crit),
+                "outside_iters": str(outside),
+                "repeats": str(len(values)),
+                "mean_throughput_ops_per_sec": f"{mean_tp:.6f}",
+            }
+        )
+    return out
+
+
+def _load_lock_rows(data_dir: str, lock: str) -> list[dict[str, str]]:
+    summary_path = os.path.join(data_dir, lock, "summary.csv")
+    raw_path = os.path.join(data_dir, lock, "raw.csv")
+    errors: list[str] = []
+
+    if os.path.isfile(summary_path):
+        fieldnames, rows = _read_csv_rows(summary_path)
+        if rows and _SUMMARY_REQUIRED.issubset(fieldnames):
+            return rows
+        if not rows:
+            errors.append("summary.csv 为空")
+        else:
+            missing = sorted(_SUMMARY_REQUIRED - set(fieldnames))
+            errors.append(f"summary.csv 缺少列 {missing}")
+
+    if os.path.isfile(raw_path):
+        fieldnames, rows = _read_csv_rows(raw_path)
+        if rows and _RAW_REQUIRED.issubset(fieldnames):
+            return _aggregate_raw_rows(rows)
+        if not rows:
+            errors.append("raw.csv 为空")
+        else:
+            missing = sorted(_RAW_REQUIRED - set(fieldnames))
+            errors.append(f"raw.csv 缺少列 {missing}")
+
+    detail = "；".join(errors) if errors else "未找到可用的 summary.csv 或 raw.csv"
+    sys.exit(f"Error: 锁 {lock} 无法加载数据: {detail}")
+
+
 def load_data(data_dir: str, locks: list[str]) -> dict:
     data = {}
     for lock in locks:
-        path = os.path.join(data_dir, lock, "summary.csv")
-        with open(path) as f:
-            data[lock] = list(csv.DictReader(f))
+        data[lock] = _load_lock_rows(data_dir, lock)
     return data
 
 
 def available_out_values(data: dict) -> list[int]:
-    sample = next(iter(data.values()))
-    return sorted({int(r["outside_iters"]) for r in sample})
+    values = sorted({int(r["outside_iters"]) for rows in data.values() for r in rows})
+    if not values:
+        sys.exit("Error: 数据集中没有可用的 outside_iters。")
+    return values
 
 
 def available_crit_values(data: dict) -> list[int]:
-    sample = next(iter(data.values()))
-    return sorted({int(r["critical_iters"]) for r in sample})
+    values = sorted({int(r["critical_iters"]) for rows in data.values() for r in rows})
+    if not values:
+        sys.exit("Error: 数据集中没有可用的 critical_iters。")
+    return values
 
 
 # ── 吞吐量查询（支持插值） ──────────────────────────────────────────────────
@@ -201,6 +295,7 @@ def print_table(data: dict, locks: list[str], out: int,
 def plot(data: dict, locks: list[str], colors: dict, markers: dict,
          out: int, crits: list[int],
          out_values: list[int], save_path: str, show: bool) -> None:
+    require_matplotlib()
 
     interpolated = out not in out_values
     out_label = f"out={out}" + (" (interpolated)" if interpolated else "")
@@ -300,6 +395,7 @@ def parse_args():
 
 
 def main():
+    require_matplotlib()
     args = parse_args()
     data_dir = os.path.realpath(args.data)
 

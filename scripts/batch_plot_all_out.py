@@ -23,16 +23,33 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 # ── 工具函数 ─────────────────────────────────────────────────────────────────
 
 def discover_out_values(data_dir: str) -> list[int]:
-    """从任意一个锁的 summary.csv 中读取所有可用的 outside_iters。"""
+    """从所有锁目录的 summary/raw 中读取可用的 outside_iters。"""
+    out_values: set[int] = set()
+    saw_dataset = False
+
     for entry in os.scandir(data_dir):
         if not entry.is_dir():
             continue
-        path = os.path.join(entry.path, "summary.csv")
-        if os.path.isfile(path):
-            with open(path) as f:
-                rows = list(csv.DictReader(f))
-            return sorted({int(r["outside_iters"]) for r in rows})
-    sys.exit(f"Error: 在 {data_dir} 下未找到任何含 summary.csv 的子目录。")
+        for filename in ("summary.csv", "raw.csv"):
+            path = os.path.join(entry.path, filename)
+            if not os.path.isfile(path):
+                continue
+            saw_dataset = True
+            with open(path, newline="") as f:
+                reader = csv.DictReader(f)
+                fieldnames = set(reader.fieldnames or [])
+                if "outside_iters" not in fieldnames:
+                    continue
+                for row in reader:
+                    value = row.get("outside_iters", "").strip()
+                    if value:
+                        out_values.add(int(value))
+
+    if out_values:
+        return sorted(out_values)
+    if saw_dataset:
+        sys.exit(f"Error: 在 {data_dir} 下找到数据文件，但没有可用的 outside_iters。")
+    sys.exit(f"Error: 在 {data_dir} 下未找到任何含 summary.csv 或 raw.csv 的子目录。")
 
 
 # ── 单任务入口（供子进程调用） ───────────────────────────────────────────────
@@ -40,7 +57,15 @@ def discover_out_values(data_dir: str) -> list[int]:
 def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> str:
     """在独立进程中为单个 out 值生成图片，返回保存路径。"""
     # 延迟导入，避免主进程 matplotlib 状态污染子进程
-    import matplotlib
+    try:
+        import matplotlib
+    except ModuleNotFoundError as exc:
+        if exc.name != "matplotlib":
+            raise
+        raise SystemExit(
+            "Error: 绘图需要 matplotlib，请先安装它，例如执行 "
+            "`python3 -m pip install matplotlib`。"
+        ) from exc
     matplotlib.use("Agg")
 
     # 将 scripts/ 目录加入路径，直接复用绘图模块
