@@ -143,21 +143,31 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 
 每行代表一个 `(threads, critical_iters, outside_iters, repeat)` 实验点，包含：
 
+- `threads`
+- `critical_iters`
+- `outside_iters`
+- `repeat`
 - `throughput_ops_per_sec`
 - `elapsed_seconds`
 - `total_operations`
-- `avg_waiters_before_lock`
 - `avg_lock_hold_ns`
-- `avg_unlock_to_next_lock_ns_all`
-- 以及 `w0 / w_gt0` 分组采样字段
+- `avg_lock_handoff_ns_estimated`
+- `lock_hold_samples`
 
 ### `summary.csv`（聚合结果）
 
 按 `(threads, critical_iters, outside_iters)` 聚合，包含：
 
+- `threads`
+- `critical_iters`
+- `outside_iters`
 - `repeats`
-- `mean/stddev/min/max_throughput_ops_per_sec`
-- 各附加指标的均值（`mean_*`）
+- `mean_throughput_ops_per_sec`
+- `elapsed_seconds`
+- `total_operations`
+- `avg_lock_hold_ns`
+- `avg_lock_handoff_ns_estimated`
+- `lock_hold_samples`
 
 ## 绘图与分析
 

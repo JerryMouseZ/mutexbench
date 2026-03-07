@@ -169,7 +169,6 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
   LockBenchT lock_bench(
       locks_bench::LockBenchOptions{cfg.timeslice_extension_mode});
-  uint64_t protected_counter = 0;
   std::atomic<uint64_t> total_ops{0};
   std::atomic<uint64_t> total_lock_hold_cycles{0};
   std::atomic<uint64_t> total_lock_hold_samples{0};
@@ -228,7 +227,6 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
           after_lock = ReadTsc();
         }
         BurnIters(cfg.critical_iters);
-        ++protected_counter;
         if (do_timing_sample) {
           before_unlock = ReadTsc();
         }
@@ -307,21 +305,10 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
       ops ? std::max(elapsed_ns - estimated_total_lock_hold_ns, 0.0) /
                 static_cast<double>(ops)
           : 0.0;
-  std::cout << "=== Lock Benchmark ===\n";
-  std::cout << "lock_kind: " << locks_bench::LockKindToString(cfg.lock_kind)
-            << "\n";
-  std::cout << "timeslice_extension_mode: "
-            << locks_bench::TimesliceExtensionModeToString(
-                   cfg.timeslice_extension_mode)
-            << "\n";
   std::cout << "threads: " << cfg.threads << "\n";
-  std::cout << "duration_ms: " << cfg.duration_ms << "\n";
-  std::cout << "warmup_duration_ms: " << cfg.warmup_duration_ms << "\n";
   std::cout << "critical_iters: " << cfg.critical_iters << "\n";
   std::cout << "outside_iters: " << cfg.outside_iters << "\n";
-  std::cout << "timing_sample_stride: " << cfg.timing_sample_stride << "\n";
   std::cout << "total_operations: " << ops << "\n";
-  std::cout << "protected_counter: " << protected_counter << "\n";
   std::cout << std::fixed << std::setprecision(6);
   std::cout << "elapsed_seconds: " << elapsed_s << "\n";
   std::cout << std::setprecision(2);

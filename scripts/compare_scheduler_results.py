@@ -4,7 +4,7 @@ compare_scheduler_results.py
 对比两套调度器实验结果（standard vs scx_lavd），并生成对比图片。
 
 目录约定：
-  <results_root>/<lock>/summary.csv
+  <results_root>/<lock>/summary.csv 或 <results_root>/<lock>/raw.csv
 
 用法示例：
   python3 scripts/compare_scheduler_results.py \
@@ -14,15 +14,22 @@ compare_scheduler_results.py
 """
 
 import argparse
-import csv
 import os
 import sys
 
-import matplotlib
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as ticker
+except ModuleNotFoundError as exc:
+    if exc.name != "matplotlib":
+        raise
+    matplotlib = None
+    plt = None
+    ticker = None
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+from bench_csv_schema import load_plot_rows
 
 
 _COLOR_POOL = [
@@ -38,6 +45,14 @@ _COLOR_POOL = [
 _MARKER_POOL = ["o", "s", "^", "D", "v", "P", "X", "*"]
 
 
+def require_matplotlib() -> None:
+    if matplotlib is None or plt is None or ticker is None:
+        sys.exit(
+            "Error: 绘图需要 matplotlib，请先安装它，例如执行 "
+            "`python3 -m pip install matplotlib`。"
+        )
+
+
 def parse_int_list(value: str | None) -> list[int] | None:
     if not value:
         return None
@@ -50,10 +65,14 @@ def discover_locks(root: str) -> list[str]:
     locks = sorted(
         d.name
         for d in os.scandir(root)
-        if d.is_dir() and os.path.isfile(os.path.join(d.path, "summary.csv"))
+        if d.is_dir()
+        and (
+            os.path.isfile(os.path.join(d.path, "summary.csv"))
+            or os.path.isfile(os.path.join(d.path, "raw.csv"))
+        )
     )
     if not locks:
-        sys.exit(f"Error: 在 {root} 下未找到任何 <lock>/summary.csv")
+        sys.exit(f"Error: 在 {root} 下未找到任何含 summary.csv 或 raw.csv 的锁目录")
     return locks
 
 
@@ -64,9 +83,11 @@ def load_results(root: str, locks: list[str]) -> tuple[dict, set[int], set[int],
     threads = set()
 
     for lock in locks:
-        path = os.path.join(root, lock, "summary.csv")
-        with open(path, newline="") as f:
-            rows = list(csv.DictReader(f))
+        lock_dir = os.path.join(root, lock)
+        try:
+            rows = load_plot_rows(lock_dir)
+        except ValueError as exc:
+            sys.exit(f"Error: {exc}")
 
         for r in rows:
             t = int(r["threads"])
@@ -402,6 +423,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    require_matplotlib()
     standard_dir = os.path.realpath(args.standard_dir)
     lavd_dir = os.path.realpath(args.lavd_dir)
     out_dir = os.path.realpath(args.out_dir)

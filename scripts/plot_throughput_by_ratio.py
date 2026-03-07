@@ -17,10 +17,10 @@ plot_throughput_by_ratio.py
 """
 
 import argparse
-import csv
 import os
 import sys
-from collections import defaultdict
+
+from bench_csv_schema import load_plot_rows
 
 try:
     import matplotlib
@@ -45,20 +45,6 @@ _MARKER_POOL = ["o", "s", "^", "D", "v", "P", "X", "*"]
 
 # 系统逻辑 CPU 数（用于参考线）
 NCPUS = 96
-
-_SUMMARY_REQUIRED = {
-    "threads",
-    "critical_iters",
-    "outside_iters",
-    "mean_throughput_ops_per_sec",
-}
-_RAW_REQUIRED = {
-    "threads",
-    "critical_iters",
-    "outside_iters",
-    "throughput_ops_per_sec",
-}
-
 
 # ── 数据加载 ─────────────────────────────────────────────────────────────────
 
@@ -95,64 +81,11 @@ def require_matplotlib() -> None:
         )
 
 
-def _read_csv_rows(path: str) -> tuple[list[str], list[dict[str, str]]]:
-    with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        return list(reader.fieldnames or []), list(reader)
-
-
-def _aggregate_raw_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    grouped: dict[tuple[int, int, int], list[float]] = defaultdict(list)
-    for row in rows:
-        key = (
-            int(row["threads"]),
-            int(row["critical_iters"]),
-            int(row["outside_iters"]),
-        )
-        grouped[key].append(float(row["throughput_ops_per_sec"]))
-
-    out = []
-    for (threads, crit, outside), values in sorted(grouped.items()):
-        mean_tp = sum(values) / len(values)
-        out.append(
-            {
-                "threads": str(threads),
-                "critical_iters": str(crit),
-                "outside_iters": str(outside),
-                "repeats": str(len(values)),
-                "mean_throughput_ops_per_sec": f"{mean_tp:.6f}",
-            }
-        )
-    return out
-
-
 def _load_lock_rows(data_dir: str, lock: str) -> list[dict[str, str]]:
-    summary_path = os.path.join(data_dir, lock, "summary.csv")
-    raw_path = os.path.join(data_dir, lock, "raw.csv")
-    errors: list[str] = []
-
-    if os.path.isfile(summary_path):
-        fieldnames, rows = _read_csv_rows(summary_path)
-        if rows and _SUMMARY_REQUIRED.issubset(fieldnames):
-            return rows
-        if not rows:
-            errors.append("summary.csv 为空")
-        else:
-            missing = sorted(_SUMMARY_REQUIRED - set(fieldnames))
-            errors.append(f"summary.csv 缺少列 {missing}")
-
-    if os.path.isfile(raw_path):
-        fieldnames, rows = _read_csv_rows(raw_path)
-        if rows and _RAW_REQUIRED.issubset(fieldnames):
-            return _aggregate_raw_rows(rows)
-        if not rows:
-            errors.append("raw.csv 为空")
-        else:
-            missing = sorted(_RAW_REQUIRED - set(fieldnames))
-            errors.append(f"raw.csv 缺少列 {missing}")
-
-    detail = "；".join(errors) if errors else "未找到可用的 summary.csv 或 raw.csv"
-    sys.exit(f"Error: 锁 {lock} 无法加载数据: {detail}")
+    try:
+        return load_plot_rows(os.path.join(data_dir, lock))
+    except ValueError as exc:
+        sys.exit(f"Error: {exc}")
 
 
 def load_data(data_dir: str, locks: list[str]) -> dict:
