@@ -10,6 +10,9 @@ enum class LockKind {
   kHapax,
   kMcs,
   kMcsTas,
+  kMcsTasTse,
+  kMcsTasNext,
+  kMcsTasNextTse,
   kTwa,
   kClh,
 };
@@ -26,6 +29,12 @@ inline const char *LockKindToString(LockKind kind) {
     return "mcs";
   case LockKind::kMcsTas:
     return "mcs-tas";
+  case LockKind::kMcsTasTse:
+    return "mcs-tas-tse";
+  case LockKind::kMcsTasNext:
+    return "mcstas-next";
+  case LockKind::kMcsTasNextTse:
+    return "mcstas-next-tse";
   case LockKind::kTwa:
     return "twa";
   case LockKind::kClh:
@@ -51,8 +60,20 @@ inline bool TryParseLockKind(const std::string &value, LockKind &out) {
     out = LockKind::kMcs;
     return true;
   }
-  if (value == "mcs-tas" || value == "mcstas") {
+  if (value == "mcs-tas") {
     out = LockKind::kMcsTas;
+    return true;
+  }
+  if (value == "mcs-tas-tse") {
+    out = LockKind::kMcsTasTse;
+    return true;
+  }
+  if (value == "mcstas-next") {
+    out = LockKind::kMcsTasNext;
+    return true;
+  }
+  if (value == "mcstas-next-tse") {
+    out = LockKind::kMcsTasNextTse;
     return true;
   }
   if (value == "twa") {

@@ -47,7 +47,8 @@ struct Config {
       << "Usage: " << prog
       << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
       << " [--critical-iters N] [--outside-iters N] [--timing-sample-stride "
-         "N] [--lock-kind mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh]"
+         "N] [--lock-kind mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|"
+         "mcstas-next|mcstas-next-tse|twa|clh]"
       << " [--timeslice-extension off|auto|require]\n"
       << "  --threads N       Number of worker threads (default: 4)\n"
       << "  --duration-ms N   Measurement duration in milliseconds (default: "
@@ -60,7 +61,8 @@ struct Config {
       << "  --timing-sample-stride N  Measure timing every N ops (default: "
          "8)\n"
       << "  --lock-kind K      Lock kind: "
-         "mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh (default: "
+         "mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|"
+         "mcstas-next-tse|twa|clh (default: "
          "mutex)\n"
       << "  --timeslice-extension M  off|auto|require (default: off)\n";
   std::exit(1);
@@ -115,7 +117,8 @@ Config ParseArgs(int argc, char *argv[]) {
       if (!locks_bench::TryParseLockKind(lock_kind, cfg.lock_kind)) {
         std::cerr << "Invalid value for --lock-kind: " << lock_kind
                   << " (expected: mutex, reciprocating, hapax, mcs, mcs-tas, "
-                     "twa, or clh)\n";
+                     "mcs-tas-tse, mcstas-next, mcstas-next-tse, twa, or "
+                     "clh)\n";
         std::exit(1);
       }
     } else if (arg == "--timeslice-extension") {

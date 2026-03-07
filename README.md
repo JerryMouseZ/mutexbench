@@ -5,7 +5,7 @@
 
 ## 功能概览
 
-- 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`twa`、`clh`
+- 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`mcs-tas-tse`、`mcstas-next`、`mcstas-next-tse`、`twa`、`clh`
 - 指标输出：吞吐量、锁内持有时间、平均等待时间近似、解锁到下一次加锁时间估计
 - 扫频脚本：自动生成 `raw.csv`（逐次运行）与 `summary.csv`（聚合统计）
 - 多锁对比：支持内置锁、外部 interpose 脚本、`lb_simple` 预加载模式
@@ -72,7 +72,7 @@ make
 - `--critical-iters N`：临界区 Burn 循环次数
 - `--outside-iters N`：临界区外 Burn 循环次数
 - `--timing-sample-stride N`：每 N 次操作采样一次时延
-- `--lock-kind`：`mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh`
+- `--lock-kind`：`mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh`
 - `--timeslice-extension`：`off|auto|require`
 
 ### 1.1) 使用 timeslice extension
@@ -97,7 +97,7 @@ make
 注意：
 
 - 该功能依赖线程已注册的 `rseq` 区域能够暴露 `slice_ctrl` 字段；旧 glibc 即使在新内核上也可能无法使用
-- 更适合用户态自旋/队列锁（如 `mcs`、`mcs-tas`、`clh`、`twa`、`hapax`、`reciprocating`）
+- 更适合用户态自旋/队列锁（如 `mcs`、`mcs-tas`、`mcs-tas-tse`、`clh`、`twa`、`hapax`、`reciprocating`）
 
 ### 2) 单锁参数扫频（输出 raw + summary）
 

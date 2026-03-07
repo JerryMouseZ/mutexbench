@@ -8,6 +8,9 @@
 #include "lock_kind.hpp"
 #include "mcs_lock_bench.hpp"
 #include "mcs_tas_lock_bench.hpp"
+#include "mcs_tas_tse_lock_bench.hpp"
+#include "mcstas_next_lock_bench.hpp"
+#include "mcstas_next_tse_lock_bench.hpp"
 #include "reciprocating_lock_bench.hpp"
 #include "std_mutex_lock_bench.hpp"
 #include "twa_lock_bench.hpp"
@@ -26,6 +29,12 @@ template <typename Fn> decltype(auto) DispatchByLockKind(LockKind kind, Fn &&fn)
     return std::forward<Fn>(fn).template operator()<McsLockBench>();
   case LockKind::kMcsTas:
     return std::forward<Fn>(fn).template operator()<McsTasLockBench>();
+  case LockKind::kMcsTasTse:
+    return std::forward<Fn>(fn).template operator()<McsTasTseLockBench>();
+  case LockKind::kMcsTasNext:
+    return std::forward<Fn>(fn).template operator()<McsTasNextLockBench>();
+  case LockKind::kMcsTasNextTse:
+    return std::forward<Fn>(fn).template operator()<McsTasNextTseLockBench>();
   case LockKind::kTwa:
     return std::forward<Fn>(fn).template operator()<TwaLockBench>();
   case LockKind::kClh:

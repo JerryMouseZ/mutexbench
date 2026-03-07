@@ -23,7 +23,7 @@ Options:
   --duration-ms N              measurement duration in ms (default: 1000)
   --warmup-duration-ms N       warmup duration in ms (default: 0)
   --timing-sample-stride N     timing sample stride (default: 8)
-  --lock-kind K                lock kind: mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh (default: mutex)
+  --lock-kind K                lock kind: mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh (default: mutex)
   --timeslice-extension M      off|auto|require (default: off)
   --repeats N                  runs per parameter point (default: 3)
   --output-raw PATH            raw per-run CSV (default: <mutexbench>/throughput_sweep_raw.csv)
@@ -272,10 +272,10 @@ if ! is_uint "$timing_sample_stride" || [[ "$timing_sample_stride" -eq 0 ]]; the
   exit 1
 fi
 case "$lock_kind" in
-  mutex|reciprocating|hapax|mcs|mcs-tas|twa|clh)
+  mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh)
     ;;
   *)
-    echo "--lock-kind must be one of: mutex, reciprocating, hapax, mcs, mcs-tas, twa, clh" >&2
+    echo "--lock-kind must be one of: mutex, reciprocating, hapax, mcs, mcs-tas, mcs-tas-tse, mcstas-next, mcstas-next-tse, twa, clh" >&2
     exit 1
     ;;
 esac
