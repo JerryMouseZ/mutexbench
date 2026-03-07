@@ -324,7 +324,7 @@ mkdir -p "$(dirname "$output_raw")"
 mkdir -p "$(dirname "$output_summary")"
 
 printf "%s\n" \
-  "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_lock_handoff_ns_estimated,lock_hold_samples" \
+  "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples" \
   > "$output_raw"
 
 extract_metric() {
@@ -365,6 +365,7 @@ for t in "${threads[@]}"; do
         elapsed_seconds=""
         total_operations=""
         avg_lock_hold_ns=""
+        avg_wait_ns_estimated=""
         avg_lock_handoff_ns_estimated=""
         lock_hold_samples=""
 
@@ -372,19 +373,20 @@ for t in "${threads[@]}"; do
         elapsed_seconds="$(extract_metric "$bench_output" "elapsed_seconds")"
         total_operations="$(extract_metric "$bench_output" "total_operations")"
         avg_lock_hold_ns="$(extract_metric "$bench_output" "avg_lock_hold_ns")"
+        avg_wait_ns_estimated="$(extract_metric "$bench_output" "avg_wait_ns_estimated")"
         avg_lock_handoff_ns_estimated="$(extract_metric "$bench_output" "avg_lock_handoff_ns_estimated")"
         lock_hold_samples="$(extract_metric "$bench_output" "lock_hold_samples")"
 
-        if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" || -z "$avg_lock_hold_ns" || -z "$avg_lock_handoff_ns_estimated" || -z "$lock_hold_samples" ]]; then
+        if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" || -z "$avg_lock_hold_ns" || -z "$avg_wait_ns_estimated" || -z "$avg_lock_handoff_ns_estimated" || -z "$lock_hold_samples" ]]; then
           echo "Failed to parse benchmark output for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
           echo "$bench_output" >&2
           exit 1
         fi
 
-        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
           "$t" "$c" "$o" "$r" \
           "$throughput" "$elapsed_seconds" "$total_operations" \
-          "$avg_lock_hold_ns" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" \
+          "$avg_lock_hold_ns" "$avg_wait_ns_estimated" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" \
           >> "$output_raw"
       done
     done
@@ -402,24 +404,26 @@ awk -F',' '
     if ($6 != "")  { sum_elapsed[key] += ($6 + 0.0); cnt_elapsed[key]++ }
     if ($7 != "")  { sum_total_ops[key] += ($7 + 0.0); cnt_total_ops[key]++ }
     if ($8 != "")  { sum_lock_hold_ns[key] += ($8 + 0.0); cnt_lock_hold_ns[key]++ }
-    if ($9 != "")  { sum_handoff_ns[key] += ($9 + 0.0); cnt_handoff_ns[key]++ }
-    if ($10 != "") { sum_lock_hold_samples[key] += ($10 + 0.0); cnt_lock_hold_samples[key]++ }
+    if ($9 != "")  { sum_wait_ns[key] += ($9 + 0.0); cnt_wait_ns[key]++ }
+    if ($10 != "") { sum_handoff_ns[key] += ($10 + 0.0); cnt_handoff_ns[key]++ }
+    if ($11 != "") { sum_lock_hold_samples[key] += ($11 + 0.0); cnt_lock_hold_samples[key]++ }
   }
   END {
-    print "threads,critical_iters,outside_iters,repeats,mean_throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_lock_handoff_ns_estimated,lock_hold_samples"
+    print "threads,critical_iters,outside_iters,repeats,mean_throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples"
     for (k in n) {
       mean = sum[k] / n[k]
 
       mean_elapsed = (cnt_elapsed[k] > 0) ? (sum_elapsed[k] / cnt_elapsed[k]) : 0
       mean_total_ops = (cnt_total_ops[k] > 0) ? (sum_total_ops[k] / cnt_total_ops[k]) : 0
       mean_lock_hold = (cnt_lock_hold_ns[k] > 0) ? (sum_lock_hold_ns[k] / cnt_lock_hold_ns[k]) : 0
+      mean_wait_ns = (cnt_wait_ns[k] > 0) ? (sum_wait_ns[k] / cnt_wait_ns[k]) : 0
       mean_handoff_ns = (cnt_handoff_ns[k] > 0) ? (sum_handoff_ns[k] / cnt_handoff_ns[k]) : 0
       mean_lock_hold_samples = (cnt_lock_hold_samples[k] > 0) ? (sum_lock_hold_samples[k] / cnt_lock_hold_samples[k]) : 0
 
       split(k, parts, FS)
-      printf "%s,%s,%s,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", \
+      printf "%s,%s,%s,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", \
              parts[1], parts[2], parts[3], n[k], mean, mean_elapsed, \
-             mean_total_ops, mean_lock_hold, mean_handoff_ns, \
+             mean_total_ops, mean_lock_hold, mean_wait_ns, mean_handoff_ns, \
              mean_lock_hold_samples
     }
   }

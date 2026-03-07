@@ -172,6 +172,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   std::atomic<uint64_t> total_ops{0};
   std::atomic<uint64_t> total_lock_hold_cycles{0};
   std::atomic<uint64_t> total_lock_hold_samples{0};
+  std::atomic<uint64_t> total_thread_elapsed_ns{0};
   std::atomic<int> workers_ready{0};
   std::atomic<int> warmup_done{0};
   std::atomic<bool> warmup_start{false};
@@ -209,6 +210,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
         _mm_pause();
       }
 
+      const auto thread_measure_start = Clock::now();
       uint64_t sample_countdown =
           static_cast<uint64_t>(thread_index) % cfg.timing_sample_stride;
       while (!measure_stop.load(std::memory_order_acquire)) {
@@ -241,10 +243,18 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
         BurnIters(cfg.outside_iters);
         ++local_ops;
       }
+      const auto thread_measure_end = Clock::now();
+      const auto local_thread_elapsed_ns =
+          static_cast<uint64_t>(std::chrono::duration_cast<
+                                    std::chrono::nanoseconds>(
+                                    thread_measure_end - thread_measure_start)
+                                    .count());
 
       total_lock_hold_cycles.fetch_add(local_lock_hold_cycles,
                                        std::memory_order_relaxed);
       total_lock_hold_samples.fetch_add(local_lock_hold_samples,
+                                        std::memory_order_relaxed);
+      total_thread_elapsed_ns.fetch_add(local_thread_elapsed_ns,
                                         std::memory_order_relaxed);
       total_ops.fetch_add(local_ops, std::memory_order_relaxed);
     });
@@ -293,6 +303,8 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
       total_lock_hold_cycles.load(std::memory_order_relaxed);
   const uint64_t lock_hold_samples =
       total_lock_hold_samples.load(std::memory_order_relaxed);
+  const uint64_t thread_elapsed_ns_total =
+      total_thread_elapsed_ns.load(std::memory_order_relaxed);
   const double throughput = ops / elapsed_s;
   const double avg_lock_hold_cycles =
       lock_hold_samples ? static_cast<double>(lock_hold_cycles) /
@@ -301,6 +313,12 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   const double avg_lock_hold_ns = avg_lock_hold_cycles * ns_per_cycle;
   const double estimated_total_lock_hold_ns =
       avg_lock_hold_ns * static_cast<double>(ops);
+  const double avg_wait_ns_estimated =
+      ops ? std::max(static_cast<double>(thread_elapsed_ns_total) -
+                         estimated_total_lock_hold_ns,
+                     0.0) /
+                static_cast<double>(ops)
+          : 0.0;
   const double avg_lock_handoff_ns_estimated =
       ops ? std::max(elapsed_ns - estimated_total_lock_hold_ns, 0.0) /
                 static_cast<double>(ops)
@@ -315,6 +333,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   std::cout << "throughput_ops_per_sec: " << throughput << "\n";
   std::cout << "lock_hold_samples: " << lock_hold_samples << "\n";
   std::cout << "avg_lock_hold_ns: " << avg_lock_hold_ns << "\n";
+  std::cout << "avg_wait_ns_estimated: " << avg_wait_ns_estimated << "\n";
   std::cout << "avg_lock_handoff_ns_estimated: "
             << avg_lock_handoff_ns_estimated << "\n";
   return 0;

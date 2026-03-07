@@ -6,7 +6,7 @@
 ## 功能概览
 
 - 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`twa`、`clh`
-- 指标输出：吞吐量、锁内持有时间、解锁到下一次加锁时间、平均等待者数量
+- 指标输出：吞吐量、锁内持有时间、平均等待时间近似、解锁到下一次加锁时间估计
 - 扫频脚本：自动生成 `raw.csv`（逐次运行）与 `summary.csv`（聚合统计）
 - 多锁对比：支持内置锁、外部 interpose 脚本、`lb_simple` 预加载模式
 - Python 工具：多锁统计分析、线程推荐、吞吐量曲线图批量生成
@@ -151,6 +151,7 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `elapsed_seconds`
 - `total_operations`
 - `avg_lock_hold_ns`
+- `avg_wait_ns_estimated`
 - `avg_lock_handoff_ns_estimated`
 - `lock_hold_samples`
 
@@ -166,12 +167,13 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `elapsed_seconds`
 - `total_operations`
 - `avg_lock_hold_ns`
+- `avg_wait_ns_estimated`
 - `avg_lock_handoff_ns_estimated`
 - `lock_hold_samples`
 
 ## 绘图与分析
 
-### 吞吐量曲线图
+### 吞吐量与时延分解图
 
 ```bash
 python3 scripts/plot_throughput_by_ratio.py \
@@ -179,6 +181,17 @@ python3 scripts/plot_throughput_by_ratio.py \
   --out 400 \
   --no-show
 ```
+
+默认会同时生成：
+
+- `throughput_by_ratio.png`
+- `latency_breakdown_by_ratio.png`
+
+其中时延分解图按 ratio 展示三类每-op 指标：
+
+- `avg_wait_ns_estimated`
+- `avg_lock_hold_ns`
+- `avg_lock_handoff_ns_estimated`
 
 批量按所有 `outside_iters` 出图：
 
