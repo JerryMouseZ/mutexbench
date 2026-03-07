@@ -53,6 +53,12 @@ def require_matplotlib() -> None:
         )
 
 
+def format_lavd_label(lock: str, lavd_suffix: str) -> str:
+    if lavd_suffix:
+        return f"{lock}{lavd_suffix}"
+    return f"{lock} (lavd)"
+
+
 def parse_int_list(value: str | None) -> list[int] | None:
     if not value:
         return None
@@ -149,6 +155,21 @@ def pick_values(
     return requested
 
 
+def intersect_or_single_side(
+    lhs: set[int], rhs: set[int], value_name: str
+) -> list[int]:
+    if lhs and rhs:
+        values = sorted(lhs & rhs)
+        if not values:
+            sys.exit(f"Error: 两边 {value_name} 无交集。")
+        return values
+    if lhs:
+        return sorted(lhs)
+    if rhs:
+        return sorted(rhs)
+    sys.exit(f"Error: 没有可用的 {value_name}。")
+
+
 def build_styles(locks: list[str]) -> tuple[dict[str, str], dict[str, str]]:
     colors = {l: _COLOR_POOL[i % len(_COLOR_POOL)] for i, l in enumerate(locks)}
     markers = {l: _MARKER_POOL[i % len(_MARKER_POOL)] for i, l in enumerate(locks)}
@@ -165,6 +186,7 @@ def _plot_scheduler_overlay(
     colors: dict,
     markers: dict,
     save_path: str,
+    lavd_suffix: str,
     title_prefix: str = "Throughput Comparison",
 ) -> None:
     fig, axes = plt.subplots(1, len(crits), figsize=(5 * len(crits) + 4, 5.8))
@@ -219,7 +241,7 @@ def _plot_scheduler_overlay(
                     markerfacecolor=colors[lock],
                     markeredgewidth=1.0,
                     linestyle="--",
-                    label=f"{lock} (lavd)",
+                    label=format_lavd_label(lock, lavd_suffix),
                     zorder=3,
                 )
 
@@ -273,6 +295,7 @@ def _plot_vs_ops_raw(
     colors: dict,
     markers: dict,
     save_path: str,
+    lavd_suffix: str,
 ) -> None:
     _plot_scheduler_overlay(
         out=out,
@@ -284,6 +307,7 @@ def _plot_vs_ops_raw(
         colors=colors,
         markers=markers,
         save_path=save_path,
+        lavd_suffix=lavd_suffix,
         title_prefix="VS Raw Throughput",
     )
 
@@ -296,10 +320,11 @@ def _plot_all_locks_in_one(
     std_data: dict,
     lavd_data: dict,
     save_path: str,
+    lavd_suffix: str,
 ) -> None:
     impl_specs = (
         [(lock, False, lock) for lock in locks]
-        + [(lock, True, f"{lock}_lavd") for lock in locks]
+        + [(lock, True, format_lavd_label(lock, lavd_suffix)) for lock in locks]
     )
     impl_labels = [x[2] for x in impl_specs]
     colors, markers = build_styles(impl_labels)
@@ -416,7 +441,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--locks",
         default=None,
-        help="逗号分隔锁名（默认使用两边交集）",
+        help="逗号分隔锁名（默认使用两边并集；单锁对比图仅对可成对比较的锁生成）",
+    )
+    p.add_argument(
+        "--lavd-suffix",
+        default="_lavd",
+        help="lavd 曲线名后缀（默认：_lavd，例如设为 _tse 后 mcs -> mcs_tse）",
     )
     return p.parse_args()
 
@@ -432,33 +462,42 @@ def main() -> None:
     standard_locks_all = discover_locks(standard_dir)
     lavd_locks_all = discover_locks(lavd_dir)
 
-    common_locks = sorted(set(standard_locks_all) & set(lavd_locks_all))
-    if not common_locks:
-        sys.exit("Error: 两边没有可对齐的锁实现（无交集）。")
+    standard_lock_set = set(standard_locks_all)
+    lavd_lock_set = set(lavd_locks_all)
+    all_locks = sorted(standard_lock_set | lavd_lock_set)
+    if not all_locks:
+        sys.exit("Error: 两边都没有可用的锁实现。")
 
     requested_locks = None
     if args.locks:
         requested_locks = [x.strip() for x in args.locks.split(",") if x.strip()]
-        missing = [x for x in requested_locks if x not in common_locks]
+        missing = [x for x in requested_locks if x not in all_locks]
         if missing:
-            sys.exit(f"Error: 请求的锁 {missing} 不在两边交集中: {common_locks}")
-        locks = requested_locks
+            sys.exit(f"Error: 请求的锁 {missing} 不在可用集合内: {all_locks}")
+        selected_locks = requested_locks
     else:
-        locks = common_locks
+        selected_locks = all_locks
 
-    std_data, std_outs, std_crits, std_threads = load_results(standard_dir, locks)
-    lavd_data, lavd_outs, lavd_crits, lavd_threads = load_results(lavd_dir, locks)
+    all_plot_locks = selected_locks
+    comparable_locks = [
+        lock for lock in selected_locks if lock in standard_lock_set and lock in lavd_lock_set
+    ]
+    standard_selected_locks = [lock for lock in selected_locks if lock in standard_lock_set]
+    lavd_selected_locks = [lock for lock in selected_locks if lock in lavd_lock_set]
 
-    outs_available = sorted(std_outs & lavd_outs)
-    crits_available = sorted(std_crits & lavd_crits)
-    threads = sorted(std_threads & lavd_threads)
+    if not standard_selected_locks and not lavd_selected_locks:
+        sys.exit("Error: 选中的锁在两边结果目录中都不存在。")
 
-    if not outs_available:
-        sys.exit("Error: 两边 outside_iters 无交集。")
-    if not crits_available:
-        sys.exit("Error: 两边 critical_iters 无交集。")
-    if not threads:
-        sys.exit("Error: 两边 threads 无交集。")
+    std_data, std_outs, std_crits, std_threads = load_results(
+        standard_dir, standard_selected_locks
+    )
+    lavd_data, lavd_outs, lavd_crits, lavd_threads = load_results(
+        lavd_dir, lavd_selected_locks
+    )
+
+    outs_available = intersect_or_single_side(std_outs, lavd_outs, "outside_iters")
+    crits_available = intersect_or_single_side(std_crits, lavd_crits, "critical_iters")
+    threads = intersect_or_single_side(std_threads, lavd_threads, "threads")
 
     requested_outs = parse_int_list(args.outs)
     requested_crits = parse_int_list(args.crits)
@@ -473,7 +512,9 @@ def main() -> None:
     print(f"standard_dir : {standard_dir}")
     print(f"lavd_dir     : {lavd_dir}")
     print(f"output_dir   : {out_dir}")
-    print(f"locks        : {locks}")
+    print(f"all_locks    : {all_plot_locks}")
+    print(f"comparable   : {comparable_locks}")
+    print(f"lavd_suffix  : {args.lavd_suffix}")
     print(f"outs         : {outs}")
     print(f"threads      : {threads}")
 
@@ -484,7 +525,21 @@ def main() -> None:
             print(f"Skip out={out}: 未找到可用 critical_iters")
             continue
 
-        for lock in locks:
+        path_all = os.path.join(out_dir, f"all_locks_out{out:04d}.png")
+        _plot_all_locks_in_one(
+            out,
+            crits,
+            all_plot_locks,
+            threads,
+            std_data,
+            lavd_data,
+            path_all,
+            args.lavd_suffix,
+        )
+        generated.append(path_all)
+        print(f"[out={out}] [all] saved: {path_all}")
+
+        for lock in comparable_locks:
             path_vs = os.path.join(out_dir, f"vs_raw_{lock}_out{out:04d}.png")
             colors, markers = build_styles([lock])
             _plot_vs_ops_raw(
@@ -497,9 +552,13 @@ def main() -> None:
                 colors,
                 markers,
                 path_vs,
+                args.lavd_suffix,
             )
             generated.append(path_vs)
             print(f"[out={out}] [{lock}] saved: {path_vs}")
+
+        if not comparable_locks:
+            print(f"[out={out}] no comparable locks; skipped per-lock scheduler-vs-scheduler plots")
 
     if not generated:
         sys.exit("Error: 没有生成任何图片。")
