@@ -8,8 +8,8 @@ usage() {
   cat <<'EOF'
 Sweep mutex_bench throughput across:
   - --threads
-  - --critical-iters
-  - --outside-iters
+  - --critical-ns
+  - --outside-ns
 
 Usage:
   scripts/sweep_mutex_throughput.sh [options]
@@ -17,9 +17,12 @@ Usage:
 Options:
   --binary PATH                Benchmark binary path (default: <mutexbench>/mutex_bench)
   --bench-ld-preload PATH      Set LD_PRELOAD only for benchmark binary execution
+  --calibration-config PATH    Pass an explicit iter calibration config to mutex_bench
   --threads CSV                Thread counts, comma-separated (default: 1,2,4,8,16)
-  --critical-iters CSV         critical-iters values (default: 10,50,100,200,500)
-  --outside-iters CSV          outside-iters values (default: 10,50,100,200,500)
+  --critical-ns CSV            Critical-section burn time in ns (default: 10,50,100,200,500)
+  --outside-ns CSV             Non-critical-section burn time in ns (default: 10,50,100,200,500)
+  --critical-iters CSV         Legacy alias for --critical-ns
+  --outside-iters CSV          Legacy alias for --outside-ns
   --duration-ms N              measurement duration in ms (default: 1000)
   --warmup-duration-ms N       warmup duration in ms (default: 0)
   --timing-sample-stride N     timing sample stride (default: 8)
@@ -33,8 +36,8 @@ Options:
 Example:
   scripts/sweep_mutex_throughput.sh \
     --threads 1,2,4,8,16 \
-    --critical-iters 10,100,500 \
-    --outside-iters 10,100,500 \
+    --critical-ns 10,100,500 \
+    --outside-ns 10,100,500 \
     --duration-ms 1000 \
     --repeats 5 \
     --output-raw results/raw.csv \
@@ -44,6 +47,7 @@ EOF
 
 binary="$MUTEXBENCH_DIR/mutex_bench"
 bench_ld_preload=""
+calibration_config=""
 threads_csv="1,2,4,8,16,32,64"
 critical_iters_csv="10,50,100,200,500,1000,2000"
 outside_iters_csv="10,50,100,200,500,1000,2000"
@@ -66,15 +70,19 @@ while [[ $# -gt 0 ]]; do
       bench_ld_preload="${2:-}"
       shift 2
       ;;
+    --calibration-config)
+      calibration_config="${2:-}"
+      shift 2
+      ;;
     --threads)
       threads_csv="${2:-}"
       shift 2
       ;;
-    --critical-iters)
+    --critical-ns|--critical-iters)
       critical_iters_csv="${2:-}"
       shift 2
       ;;
-    --outside-iters)
+    --outside-ns|--outside-iters)
       outside_iters_csv="${2:-}"
       shift 2
       ;;
@@ -296,8 +304,8 @@ declare -a critical_iters=()
 declare -a outside_iters=()
 
 parse_csv_values "$threads_csv" "--threads" "no" threads
-parse_csv_values "$critical_iters_csv" "--critical-iters" "yes" critical_iters
-parse_csv_values "$outside_iters_csv" "--outside-iters" "yes" outside_iters
+parse_csv_values "$critical_iters_csv" "--critical-ns" "yes" critical_iters
+parse_csv_values "$outside_iters_csv" "--outside-ns" "yes" outside_iters
 
 binary="$(resolve_executable_path "$binary" "$MUTEXBENCH_DIR")"
 output_raw="$(resolve_output_path "$output_raw" "$MUTEXBENCH_DIR")"
@@ -349,11 +357,14 @@ for t in "${threads[@]}"; do
           --lock-kind "$lock_kind"
           --duration-ms "$duration_ms"
           --warmup-duration-ms "$warmup_duration_ms"
-          --critical-iters "$c"
-          --outside-iters "$o"
+          --critical-ns "$c"
+          --outside-ns "$o"
           --timing-sample-stride "$timing_sample_stride"
           --timeslice-extension "$timeslice_extension"
         )
+        if [[ -n "$calibration_config" ]]; then
+          bench_cmd+=( --calibration-config "$calibration_config" )
+        fi
         if [[ -n "$bench_ld_preload" ]]; then
           bench_output="$(env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}")"
         else

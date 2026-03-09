@@ -25,6 +25,7 @@ compile_commands.json
 .claude/worktrees
 .dmux/
 .dmux-hooks
+iter_calibration.cfg
 
 results*
 

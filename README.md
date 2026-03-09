@@ -57,8 +57,8 @@ make
   --threads 4 \
   --duration-ms 1000 \
   --warmup-duration-ms 50 \
-  --critical-iters 100 \
-  --outside-iters 100 \
+  --critical-ns 100 \
+  --outside-ns 100 \
   --timing-sample-stride 8 \
   --lock-kind mutex \
   --timeslice-extension auto
@@ -69,11 +69,16 @@ make
 - `--threads N`：线程数
 - `--duration-ms N`：正式测量时长（毫秒）
 - `--warmup-duration-ms N`：预热时长（毫秒）
-- `--critical-iters N`：临界区 Burn 循环次数
-- `--outside-iters N`：临界区外 Burn 循环次数
+- `--critical-ns N`：请求的临界区 Burn 时间（纳秒）
+- `--outside-ns N`：请求的临界区外 Burn 时间（纳秒）
 - `--timing-sample-stride N`：每 N 次操作采样一次时延
 - `--lock-kind`：`mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh`
 - `--timeslice-extension`：`off|auto|require`
+
+兼容性说明：
+
+- `--critical-iters` 仍可用，但现在只是 `--critical-ns` 的兼容别名
+- `--outside-iters` 仍可用，但现在只是 `--outside-ns` 的兼容别名
 
 ### 1.1) 使用 timeslice extension
 
@@ -82,8 +87,8 @@ make
 ```bash
 ./mutex_bench \
   --threads 32 \
-  --critical-iters 100 \
-  --outside-iters 100 \
+  --critical-ns 100 \
+  --outside-ns 100 \
   --lock-kind mcs \
   --timeslice-extension auto
 ```
@@ -106,8 +111,8 @@ scripts/sweep_mutex_throughput.sh \
   --lock-kind mutex \
   --timeslice-extension auto \
   --threads 1,2,4,8,16,32 \
-  --critical-iters 10,50,100,200,500 \
-  --outside-iters 10,50,100,200,500 \
+  --critical-ns 10,50,100,200,500 \
+  --outside-ns 10,50,100,200,500 \
   --duration-ms 1000 \
   --warmup-duration-ms 50 \
   --repeats 3 \
@@ -123,8 +128,8 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
   --sudo-mode none \
   --timeslice-extension auto \
   --threads 1,2,4,8,16,32 \
-  --critical-iters 10,50,100,200,500 \
-  --outside-iters 10,50,100,200,500 \
+  --critical-ns 10,50,100,200,500 \
+  --outside-ns 10,50,100,200,500 \
   --duration-ms 1000 \
   --repeats 3 \
   --output-root results-new
@@ -142,6 +147,8 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 ### `raw.csv`（逐次运行）
 
 每行代表一个 `(threads, critical_iters, outside_iters, repeat)` 实验点，包含：
+
+说明：为兼容现有分析脚本，CSV 头部暂时沿用 `critical_iters/outside_iters` 字段名，但其数值含义已经是请求的 `critical_ns/outside_ns`。
 
 - `threads`
 - `critical_iters`
@@ -224,10 +231,35 @@ python3 scripts/recommend_threads.py \
 
 ## BurnIters 曲线测量（可选）
 
-`curve_bench` 用于测量 `BurnIters(iters)` 的时间曲线，便于将 `critical_iters/outside_iters` 映射到实际开销量级。
+`curve_bench` 用于测量 `BurnIters(iters)` 的时间曲线，便于将 `critical_ns/outside_ns` 校准到实际开销量级。
 
 ```bash
 ./curve_bench --min-iters 0 --max-iters 10000 --step-iters 100 > curve.csv
+```
+
+也可以直接用校准脚本拟合 `ns/iter`，并输出建议的源码校准系数与 CLI iter 映射倍数：
+
+```bash
+python3 scripts/calibrate_iters.py \
+  --mode curve \
+  --max-iters 4000 \
+  --step-iters 200 \
+  --map-ns 10,50,100,200,400,800 \
+  --write-config
+```
+
+校准完成后，`mutex_bench` 和 `curve_bench` 会默认读取可执行文件同目录下的 `iter_calibration.cfg`。
+
+如果希望直接按 `mutex_bench` 的持锁时间路径做校准，可以切到 `mutex` 模式：
+
+```bash
+python3 scripts/calibrate_iters.py \
+  --mode mutex \
+  --min-iters 100 \
+  --max-iters 2000 \
+  --step-iters 100 \
+  --outside-ns 0 \
+  --write-config
 ```
 
 ## 清理

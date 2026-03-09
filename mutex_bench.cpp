@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+#include "bench/burn_calibration.hpp"
 #include "bench/locks_bench/lock_bench.hpp"
 #include "bench/locks_bench/lock_dispatch.hpp"
 #include "bench/locks_bench/lock_kind.hpp"
@@ -31,12 +33,20 @@ inline uint64_t ReadTsc() {
 }
 
 struct Config {
+  static constexpr uint64_t kDefaultBurnCalibrationNumerator = 9;
+  static constexpr uint64_t kDefaultBurnCalibrationDenominator = 32;
+
   int threads = 4;
   uint64_t duration_ms = 1000;
   uint64_t warmup_duration_ms = 0;
-  uint64_t critical_iters = 100;
-  uint64_t outside_iters = 100;
+  uint64_t critical_ns = 100;
+  uint64_t outside_ns = 100;
   uint64_t timing_sample_stride = 8;
+  std::string calibration_config_path;
+  bool calibration_config_explicit = false;
+  burn_calibration::Calibration burn_calibration{
+      kDefaultBurnCalibrationNumerator, kDefaultBurnCalibrationDenominator};
+  std::string burn_calibration_source = "compiled-default";
   locks_bench::LockKind lock_kind = locks_bench::LockKind::kMutex;
   locks_bench::TimesliceExtensionMode timeslice_extension_mode =
       locks_bench::TimesliceExtensionMode::kOff;
@@ -46,7 +56,7 @@ struct Config {
   std::cerr
       << "Usage: " << prog
       << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
-      << " [--critical-iters N] [--outside-iters N] [--timing-sample-stride "
+      << " [--critical-ns N] [--outside-ns N] [--timing-sample-stride "
          "N] [--lock-kind mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|"
          "mcstas-next|mcstas-next-tse|twa|clh]"
       << " [--timeslice-extension off|auto|require]\n"
@@ -55,11 +65,16 @@ struct Config {
          "1000)\n"
       << "  --warmup-duration-ms N  Warmup duration in milliseconds (default: "
          "0)\n"
-      << "  --critical-iters N  Loop iterations in critical section (default: "
-         "100)\n"
-      << "  --outside-iters N   Loop iterations outside lock (default: 100)\n"
+      << "  --critical-ns N   Requested critical-section burn time in "
+         "nanoseconds (default: 100)\n"
+      << "  --outside-ns N    Requested non-critical-section burn time in "
+         "nanoseconds (default: 100)\n"
+      << "  --critical-iters N  Legacy alias for --critical-ns\n"
+      << "  --outside-iters N   Legacy alias for --outside-ns\n"
       << "  --timing-sample-stride N  Measure timing every N ops (default: "
          "8)\n"
+      << "  --calibration-config PATH  Optional iter calibration config "
+         "(default: <binary-dir>/iter_calibration.cfg)\n"
       << "  --lock-kind K      Lock kind: "
          "mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|"
          "mcstas-next-tse|twa|clh (default: "
@@ -103,15 +118,17 @@ Config ParseArgs(int argc, char *argv[]) {
     } else if (arg == "--warmup-duration-ms") {
       cfg.warmup_duration_ms =
           ParseU64(need_next("--warmup-duration-ms"), "--warmup-duration-ms");
-    } else if (arg == "--critical-iters") {
-      cfg.critical_iters =
-          ParseU64(need_next("--critical-iters"), "--critical-iters");
-    } else if (arg == "--outside-iters") {
-      cfg.outside_iters =
-          ParseU64(need_next("--outside-iters"), "--outside-iters");
+    } else if (arg == "--critical-ns" || arg == "--critical-iters") {
+      cfg.critical_ns =
+          ParseU64(need_next("--critical-ns"), "--critical-ns");
+    } else if (arg == "--outside-ns" || arg == "--outside-iters") {
+      cfg.outside_ns = ParseU64(need_next("--outside-ns"), "--outside-ns");
     } else if (arg == "--timing-sample-stride") {
       cfg.timing_sample_stride = ParseU64(need_next("--timing-sample-stride"),
                                           "--timing-sample-stride");
+    } else if (arg == "--calibration-config") {
+      cfg.calibration_config_path = need_next("--calibration-config");
+      cfg.calibration_config_explicit = true;
     } else if (arg == "--lock-kind") {
       const std::string lock_kind = need_next("--lock-kind");
       if (!locks_bench::TryParseLockKind(lock_kind, cfg.lock_kind)) {
@@ -160,9 +177,56 @@ Config ParseArgs(int argc, char *argv[]) {
   return cfg;
 }
 
-inline void BurnIters(uint64_t iters) {
+bool ApplyCalibrationConfig(Config *cfg, const char *argv0) {
+  const std::filesystem::path config_path =
+      cfg->calibration_config_explicit
+          ? std::filesystem::path(cfg->calibration_config_path)
+          : burn_calibration::DefaultConfigPath(argv0);
+  if (!cfg->calibration_config_explicit) {
+    std::error_code ec;
+    if (!std::filesystem::exists(config_path, ec) || ec) {
+      return true;
+    }
+  }
+
+  const auto load =
+      burn_calibration::LoadCalibration(config_path, "mutex_bench");
+  switch (load.status) {
+    case burn_calibration::LoadStatus::kLoaded:
+      cfg->burn_calibration = load.calibration;
+      cfg->burn_calibration_source = load.path.string();
+      cfg->calibration_config_path = load.path.string();
+      return true;
+    case burn_calibration::LoadStatus::kMissingFile:
+      if (cfg->calibration_config_explicit) {
+        std::cerr << "Calibration config not found: " << config_path << "\n";
+        return false;
+      }
+      return true;
+    case burn_calibration::LoadStatus::kMissingSection:
+      if (cfg->calibration_config_explicit) {
+        std::cerr << "Calibration config does not contain mutex_bench.* keys: "
+                  << config_path << "\n";
+        return false;
+      }
+      return true;
+    case burn_calibration::LoadStatus::kError:
+      std::cerr << load.error << "\n";
+      return false;
+  }
+  return false;
+}
+
+inline void BurnIters(uint64_t iters,
+                      const burn_calibration::Calibration &calibration) {
+  if (iters == 0) {
+    return;
+  }
+  const uint64_t raw_iters = std::max<uint64_t>(
+      1, (iters * calibration.numerator + (calibration.denominator / 2)) /
+             calibration.denominator);
   volatile uint64_t x = 0;
-  for (uint64_t i = 0; i < iters; ++i) {
+  for (uint64_t i = 0; i < raw_iters; ++i) {
     x = (x * 1664525u) + 1013904223u + i;
   }
 }
@@ -202,9 +266,9 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
       if (cfg.warmup_duration_ms > 0) {
         while (!warmup_stop.load(std::memory_order_acquire)) {
           auto guard_state = lock_bench.lock();
-          BurnIters(cfg.critical_iters);
+          BurnIters(cfg.critical_ns, cfg.burn_calibration);
           lock_bench.unlock(guard_state);
-          BurnIters(cfg.outside_iters);
+          BurnIters(cfg.outside_ns, cfg.burn_calibration);
         }
       }
 
@@ -231,7 +295,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
         if (do_timing_sample) {
           after_lock = ReadTsc();
         }
-        BurnIters(cfg.critical_iters);
+        BurnIters(cfg.critical_ns, cfg.burn_calibration);
         if (do_timing_sample) {
           before_unlock = ReadTsc();
         }
@@ -243,7 +307,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
             ++local_lock_hold_samples;
           }
         }
-        BurnIters(cfg.outside_iters);
+        BurnIters(cfg.outside_ns, cfg.burn_calibration);
         ++local_ops;
       }
       const auto thread_measure_end = Clock::now();
@@ -327,8 +391,12 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
                 static_cast<double>(ops)
           : 0.0;
   std::cout << "threads: " << cfg.threads << "\n";
-  std::cout << "critical_iters: " << cfg.critical_iters << "\n";
-  std::cout << "outside_iters: " << cfg.outside_iters << "\n";
+  std::cout << "critical_ns: " << cfg.critical_ns << "\n";
+  std::cout << "outside_ns: " << cfg.outside_ns << "\n";
+  std::cout << "burn_calibration: "
+            << burn_calibration::ToString(cfg.burn_calibration) << "\n";
+  std::cout << "burn_calibration_source: " << cfg.burn_calibration_source
+            << "\n";
   std::cout << "total_operations: " << ops << "\n";
   std::cout << std::fixed << std::setprecision(6);
   std::cout << "elapsed_seconds: " << elapsed_s << "\n";
@@ -344,6 +412,9 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
 int main(int argc, char *argv[]) {
   Config cfg = ParseArgs(argc, argv);
+  if (!ApplyCalibrationConfig(&cfg, argv[0])) {
+    return 1;
+  }
 
   if (cfg.timeslice_extension_mode !=
       locks_bench::TimesliceExtensionMode::kOff) {

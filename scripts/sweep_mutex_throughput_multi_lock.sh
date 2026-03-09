@@ -69,8 +69,8 @@ Example:
     --locks mutex,mcs,ticket \
     --sudo-mode all \
     --threads 1,2,4,8,16 \
-    --critical-iters 10,100,500 \
-    --outside-iters 10,100,500 \
+    --critical-ns 10,100,500 \
+    --outside-ns 10,100,500 \
     --duration-ms 1000 \
     --repeats 5 \
     --output-root results
