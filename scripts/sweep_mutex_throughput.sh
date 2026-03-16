@@ -22,7 +22,6 @@ Options:
   --critical-ns CSV            Critical-section burn time in ns (default: 10,50,100,200,500)
   --outside-ns CSV             Non-critical-section burn time in ns (default: 10,50,100,200,500)
   --critical-iters CSV         Legacy alias for --critical-ns
-  --outside-iters CSV          Legacy alias for --outside-ns
   --duration-ms N              measurement duration in ms (default: 1000)
   --warmup-duration-ms N       warmup duration in ms (default: 0)
   --timing-sample-stride N     timing sample stride (default: 8)
@@ -82,7 +81,7 @@ while [[ $# -gt 0 ]]; do
       critical_iters_csv="${2:-}"
       shift 2
       ;;
-    --outside-ns|--outside-iters)
+    --outside-ns)
       outside_iters_csv="${2:-}"
       shift 2
       ;;
@@ -328,17 +327,54 @@ if [[ ! -x "$binary" ]]; then
   exit 1
 fi
 
+if ! command -v pidstat >/dev/null 2>&1; then
+  echo "pidstat not found in PATH" >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "$output_raw")"
 mkdir -p "$(dirname "$output_summary")"
 
 printf "%s\n" \
-  "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples" \
+  "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct" \
   > "$output_raw"
 
 extract_metric() {
   local text="$1"
   local key="$2"
   awk -F': *' -v k="$key" '$1 == k {print $2; exit}' <<< "$text"
+}
+
+extract_avg_cpu_pct() {
+  local pidstat_output_path="$1"
+
+  awk '
+    function is_float(value) {
+      return value ~ /^-?[0-9]+([.][0-9]+)?$/
+    }
+
+    $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $3 ~ /^[0-9]+$/ && is_float($8) {
+      pid = $3
+      counts[pid] += 1
+      samples[pid SUBSEP counts[pid]] = $8 + 0.0
+    }
+
+    END {
+      total = 0.0
+      kept = 0
+      for (pid in counts) {
+        start = (counts[pid] > 1) ? 2 : 1
+        for (i = start; i <= counts[pid]; ++i) {
+          total += samples[pid SUBSEP i]
+          kept += 1
+        }
+      }
+      if (kept == 0) {
+        exit 1
+      }
+      printf "%.6f\n", total / kept
+    }
+  ' "$pidstat_output_path"
 }
 
 total_runs=$(( ${#threads[@]} * ${#critical_iters[@]} * ${#outside_iters[@]} * repeats ))
@@ -365,11 +401,6 @@ for t in "${threads[@]}"; do
         if [[ -n "$calibration_config" ]]; then
           bench_cmd+=( --calibration-config "$calibration_config" )
         fi
-        if [[ -n "$bench_ld_preload" ]]; then
-          bench_output="$(env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}")"
-        else
-          bench_output="$("${bench_cmd[@]}")"
-        fi
 
         # Initialize per-run fields so nounset never trips on missing metrics.
         throughput=""
@@ -379,6 +410,38 @@ for t in "${threads[@]}"; do
         avg_wait_ns_estimated=""
         avg_lock_handoff_ns_estimated=""
         lock_hold_samples=""
+        avg_cpu_pct=""
+
+        bench_output_path="$(mktemp)"
+        pidstat_output_path="$(mktemp)"
+
+        if [[ -n "$bench_ld_preload" ]]; then
+          env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}" >"$bench_output_path" &
+        else
+          "${bench_cmd[@]}" >"$bench_output_path" &
+        fi
+        bench_pid=$!
+
+        pidstat -u -h -p "$bench_pid" 1 >"$pidstat_output_path" 2>&1 &
+        pidstat_pid=$!
+
+        if wait "$bench_pid"; then
+          bench_status=0
+        else
+          bench_status=$?
+        fi
+
+        kill "$pidstat_pid" >/dev/null 2>&1 || true
+        wait "$pidstat_pid" >/dev/null 2>&1 || true
+
+        bench_output="$(<"$bench_output_path")"
+
+        if [[ "$bench_status" -ne 0 ]]; then
+          echo "Benchmark command failed for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
+          echo "$bench_output" >&2
+          rm -f -- "$bench_output_path" "$pidstat_output_path"
+          exit "$bench_status"
+        fi
 
         throughput="$(extract_metric "$bench_output" "throughput_ops_per_sec")"
         elapsed_seconds="$(extract_metric "$bench_output" "elapsed_seconds")"
@@ -388,16 +451,25 @@ for t in "${threads[@]}"; do
         avg_lock_handoff_ns_estimated="$(extract_metric "$bench_output" "avg_lock_handoff_ns_estimated")"
         lock_hold_samples="$(extract_metric "$bench_output" "lock_hold_samples")"
 
-        if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" || -z "$avg_lock_hold_ns" || -z "$avg_wait_ns_estimated" || -z "$avg_lock_handoff_ns_estimated" || -z "$lock_hold_samples" ]]; then
+        if ! avg_cpu_pct="$(extract_avg_cpu_pct "$pidstat_output_path")"; then
+          echo "Failed to parse steady CPU samples for threads=${t} critical=${c} outside=${o} repeat=${r}; ensure pidstat emitted at least one sample" >&2
+          cat "$pidstat_output_path" >&2
+          rm -f -- "$bench_output_path" "$pidstat_output_path"
+          exit 1
+        fi
+
+        rm -f -- "$bench_output_path" "$pidstat_output_path"
+
+        if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" || -z "$avg_lock_hold_ns" || -z "$avg_wait_ns_estimated" || -z "$avg_lock_handoff_ns_estimated" || -z "$lock_hold_samples" || -z "$avg_cpu_pct" ]]; then
           echo "Failed to parse benchmark output for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
           echo "$bench_output" >&2
           exit 1
         fi
 
-        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
           "$t" "$c" "$o" "$r" \
           "$throughput" "$elapsed_seconds" "$total_operations" \
-          "$avg_lock_hold_ns" "$avg_wait_ns_estimated" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" \
+          "$avg_lock_hold_ns" "$avg_wait_ns_estimated" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" "$avg_cpu_pct" \
           >> "$output_raw"
       done
     done
@@ -418,9 +490,10 @@ awk -F',' '
     if ($9 != "")  { sum_wait_ns[key] += ($9 + 0.0); cnt_wait_ns[key]++ }
     if ($10 != "") { sum_handoff_ns[key] += ($10 + 0.0); cnt_handoff_ns[key]++ }
     if ($11 != "") { sum_lock_hold_samples[key] += ($11 + 0.0); cnt_lock_hold_samples[key]++ }
+    if ($12 != "") { sum_cpu_pct[key] += ($12 + 0.0); cnt_cpu_pct[key]++ }
   }
   END {
-    print "threads,critical_iters,outside_iters,repeats,mean_throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples"
+    print "threads,critical_iters,outside_iters,repeats,mean_throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct"
     for (k in n) {
       mean = sum[k] / n[k]
 
@@ -430,12 +503,13 @@ awk -F',' '
       mean_wait_ns = (cnt_wait_ns[k] > 0) ? (sum_wait_ns[k] / cnt_wait_ns[k]) : 0
       mean_handoff_ns = (cnt_handoff_ns[k] > 0) ? (sum_handoff_ns[k] / cnt_handoff_ns[k]) : 0
       mean_lock_hold_samples = (cnt_lock_hold_samples[k] > 0) ? (sum_lock_hold_samples[k] / cnt_lock_hold_samples[k]) : 0
+      mean_cpu_pct = (cnt_cpu_pct[k] > 0) ? (sum_cpu_pct[k] / cnt_cpu_pct[k]) : 0
 
       split(k, parts, FS)
-      printf "%s,%s,%s,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", \
+      printf "%s,%s,%s,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", \
              parts[1], parts[2], parts[3], n[k], mean, mean_elapsed, \
              mean_total_ops, mean_lock_hold, mean_wait_ns, mean_handoff_ns, \
-             mean_lock_hold_samples
+             mean_lock_hold_samples, mean_cpu_pct
     }
   }
 ' "$output_raw" | sort -t',' -k1,1n -k2,2n -k3,3n > "$output_summary"

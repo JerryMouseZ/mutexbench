@@ -70,7 +70,6 @@ struct Config {
       << "  --outside-ns N    Requested non-critical-section burn time in "
          "nanoseconds (default: 100)\n"
       << "  --critical-iters N  Legacy alias for --critical-ns\n"
-      << "  --outside-iters N   Legacy alias for --outside-ns\n"
       << "  --timing-sample-stride N  Measure timing every N ops (default: "
          "8)\n"
       << "  --calibration-config PATH  Optional iter calibration config "
@@ -121,7 +120,7 @@ Config ParseArgs(int argc, char *argv[]) {
     } else if (arg == "--critical-ns" || arg == "--critical-iters") {
       cfg.critical_ns =
           ParseU64(need_next("--critical-ns"), "--critical-ns");
-    } else if (arg == "--outside-ns" || arg == "--outside-iters") {
+    } else if (arg == "--outside-ns") {
       cfg.outside_ns = ParseU64(need_next("--outside-ns"), "--outside-ns");
     } else if (arg == "--timing-sample-stride") {
       cfg.timing_sample_stride = ParseU64(need_next("--timing-sample-stride"),

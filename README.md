@@ -35,6 +35,7 @@
 - `g++`（支持 C++20）
 - `make`
 - Python 3（绘图脚本需要 `matplotlib`）
+- `pidstat`（`scripts/sweep_mutex_throughput.sh` 需要，用于记录 steady CPU）
 - 可选：`sudo`、`bpftool`（使用 `lb_simple`/部分锁脚本时可能需要）
 
 ## 构建
@@ -78,7 +79,6 @@ make
 兼容性说明：
 
 - `--critical-iters` 仍可用，但现在只是 `--critical-ns` 的兼容别名
-- `--outside-iters` 仍可用，但现在只是 `--outside-ns` 的兼容别名
 
 ### 1.1) 使用 timeslice extension
 
@@ -119,6 +119,8 @@ scripts/sweep_mutex_throughput.sh \
   --output-raw results/mutex/raw.csv \
   --output-summary results/mutex/summary.csv
 ```
+
+说明：该脚本会对每次运行启动 `pidstat -u -h -p <pid> 1` 采样 CPU，因此基准时长需要足够长，至少让 `pidstat` 产出一条 `%CPU` 样本。
 
 ### 3) 多锁批量扫频
 
@@ -161,6 +163,9 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `avg_wait_ns_estimated`
 - `avg_lock_handoff_ns_estimated`
 - `lock_hold_samples`
+- `avg_cpu_pct`
+
+其中 `avg_cpu_pct` 表示该次运行的 steady `%CPU` 均值：若同一 PID 有多条 `pidstat` 样本，则丢弃首条样本后再取平均；若只有一条样本，则直接使用该样本。
 
 ### `summary.csv`（聚合结果）
 
@@ -177,6 +182,7 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `avg_wait_ns_estimated`
 - `avg_lock_handoff_ns_estimated`
 - `lock_hold_samples`
+- `avg_cpu_pct`
 
 ## 绘图与分析
 
@@ -226,7 +232,7 @@ python3 scripts/recommend_threads.py \
   --results-root results-new \
   --lock mcs \
   --critical-iters 100 \
-  --outside-iters 400
+  --outside-ns 400
 ```
 
 ## BurnIters 曲线测量（可选）

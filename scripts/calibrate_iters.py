@@ -163,7 +163,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--outside-ns",
-        "--outside-iters",
         type=int,
         default=0,
         help="mutex mode: fixed non-critical-section workload in ns (default: 0)",

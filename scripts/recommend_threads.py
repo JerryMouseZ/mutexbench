@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Recommend thread count for a given lock/critical_iters/outside_iters.
+"""Recommend thread count for a given lock/critical_iters/outside_ns.
 
 The script works in two stages:
 1) Exact lookup on measured points (best fidelity when config exists).
@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
         help='Lock name (e.g. clh|mcs|hapax|reciprocating) or "all"',
     )
     p.add_argument("--critical-iters", type=int, required=True, help="critical_iters")
-    p.add_argument("--outside-iters", type=int, required=True, help="outside_iters")
+    p.add_argument("--outside-ns", type=int, required=True, help="outside_ns")
     p.add_argument(
         "--neighbors",
         type=int,
@@ -227,7 +227,7 @@ def recommend_for_lock(
     r = o / c
     rb = ratio_bin(r)
     cb = crit_bin(c)
-    print(f"  query: critical_iters={c}, outside_iters={o}, outside/critical={r:.4f}")
+    print(f"  query: critical_iters={c}, outside_ns={o}, outside/critical={r:.4f}")
 
     exact = pair_metrics.get((c, o))
     if exact is not None:
@@ -256,8 +256,8 @@ def recommend_for_lock(
 
 def main() -> None:
     args = parse_args()
-    if args.critical_iters <= 0 or args.outside_iters <= 0:
-        raise SystemExit("--critical-iters and --outside-iters must be > 0")
+    if args.critical_iters <= 0 or args.outside_ns <= 0:
+        raise SystemExit("--critical-iters and --outside-ns must be > 0")
 
     root = Path(args.results_root)
     if not root.is_dir():
@@ -290,7 +290,7 @@ def main() -> None:
             lock=lock,
             pair_metrics=pair_metrics,
             c=args.critical_iters,
-            o=args.outside_iters,
+            o=args.outside_ns,
             neighbors=args.neighbors,
         )
 

@@ -4,7 +4,7 @@ LDFLAGS ?=
 
 TARGETS := mutex_bench curve_bench
 
-.PHONY: all clean
+.PHONY: all clean test-remove-outside-iters test-sweep-throughput-cpu
 
 all: $(TARGETS)
 
@@ -16,3 +16,9 @@ curve_bench: curve_bench.cpp
 
 clean:
 	rm -f $(TARGETS)
+
+test-remove-outside-iters: mutex_bench
+	bash scripts/test_remove_outside_iters.sh
+
+test-sweep-throughput-cpu:
+	bash scripts/test_sweep_mutex_throughput_cpu.sh

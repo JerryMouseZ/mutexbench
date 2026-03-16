@@ -9,6 +9,7 @@ WAIT_FIELD = "avg_wait_ns_estimated"
 HANDOFF_FIELD = "avg_lock_handoff_ns_estimated"
 LEGACY_HANDOFF_FIELD = "avg_unlock_to_next_lock_ns_all"
 THROUGHPUT_FIELD = "mean_throughput_ops_per_sec"
+CPU_FIELD = "avg_cpu_pct"
 
 RAW_FIELDNAMES = [
     "threads",
@@ -22,6 +23,7 @@ RAW_FIELDNAMES = [
     WAIT_FIELD,
     HANDOFF_FIELD,
     "lock_hold_samples",
+    CPU_FIELD,
 ]
 
 SUMMARY_FIELDNAMES = [
@@ -36,6 +38,7 @@ SUMMARY_FIELDNAMES = [
     WAIT_FIELD,
     HANDOFF_FIELD,
     "lock_hold_samples",
+    CPU_FIELD,
 ]
 
 SUMMARY_REQUIRED = {
@@ -157,8 +160,10 @@ def normalize_raw_rows(
             WAIT_FIELD: _normalize_wait_value(row, wait_key),
             HANDOFF_FIELD: row[handoff_key].strip(),
             "lock_hold_samples": row["lock_hold_samples"].strip(),
+            CPU_FIELD: row.get(CPU_FIELD, "").strip(),
         }
-        missing_values = [k for k, v in normalized.items() if v == ""]
+        required_values = RAW_REQUIRED_FOR_CANONICAL | {WAIT_FIELD, HANDOFF_FIELD}
+        missing_values = [k for k in required_values if normalized.get(k, "") == ""]
         if missing_values:
             raise ValueError(f"{source}: empty values for columns {missing_values}")
         out.append(normalized)
@@ -176,6 +181,8 @@ def aggregate_summary_rows(raw_rows: list[dict[str, str]]) -> list[dict[str, str
             "sum_wait": 0.0,
             "sum_handoff": 0.0,
             "sum_lock_hold_samples": 0.0,
+            "sum_cpu": 0.0,
+            "count_cpu": 0.0,
         }
     )
 
@@ -194,6 +201,10 @@ def aggregate_summary_rows(raw_rows: list[dict[str, str]]) -> list[dict[str, str
         agg["sum_wait"] += float(row[WAIT_FIELD])
         agg["sum_handoff"] += float(row[HANDOFF_FIELD])
         agg["sum_lock_hold_samples"] += float(row["lock_hold_samples"])
+        cpu_value = row.get(CPU_FIELD, "").strip()
+        if cpu_value:
+            agg["sum_cpu"] += float(cpu_value)
+            agg["count_cpu"] += 1.0
 
     out: list[dict[str, str]] = []
     for threads, critical, outside in sorted(grouped):
@@ -212,6 +223,9 @@ def aggregate_summary_rows(raw_rows: list[dict[str, str]]) -> list[dict[str, str
                 WAIT_FIELD: _format_float(agg["sum_wait"] / count),
                 HANDOFF_FIELD: _format_float(agg["sum_handoff"] / count),
                 "lock_hold_samples": _format_float(agg["sum_lock_hold_samples"] / count),
+                CPU_FIELD: (
+                    _format_float(agg["sum_cpu"] / agg["count_cpu"]) if agg["count_cpu"] else ""
+                ),
             }
         )
     return out
@@ -248,6 +262,7 @@ def normalize_summary_rows(
             WAIT_FIELD: _normalize_wait_value(row, wait_key),
             HANDOFF_FIELD: row[handoff_key].strip() if handoff_key is not None else "",
             "lock_hold_samples": row.get("lock_hold_samples", "").strip(),
+            CPU_FIELD: row.get(CPU_FIELD, "").strip(),
         }
 
         missing_values = [name for name in required if normalized.get(name, "") == ""]

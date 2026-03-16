@@ -30,3 +30,4 @@ iter_calibration.cfg
 results*
 
 __pycache__
+/docs/superpowers/
