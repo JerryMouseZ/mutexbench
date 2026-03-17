@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 batch_plot_all_out.py
-遍历数据集中所有可用的 outside_iters 值，为每个 out 生成吞吐量图和时延分解图。
+遍历数据集中所有可用的 outside_iters 值，为每个 out 生成吞吐量图、时延分解图和 CPU 使用率图。
 
 用法：
     python3 batch_plot_all_out.py [--data DIR] [--out-dir DIR] [--crits C,...] [--jobs N]
@@ -54,8 +54,8 @@ def discover_out_values(data_dir: str) -> list[int]:
 
 # ── 单任务入口（供子进程调用） ───────────────────────────────────────────────
 
-def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tuple[str, str]:
-    """在独立进程中为单个 out 值生成两张图片，返回保存路径。"""
+def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tuple[str, str, str]:
+    """在独立进程中为单个 out 值生成三张图片，返回保存路径。"""
     # 延迟导入，避免主进程 matplotlib 状态污染子进程
     try:
         import matplotlib
@@ -74,15 +74,20 @@ def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tu
         sys.path.insert(0, scripts_dir)
 
     from plot_throughput_by_ratio import (
+        CPU_PLOT_REQUIRED_FIELDS,
         LATENCY_PLOT_REQUIRED_FIELDS,
         discover_locks, build_styles, load_data,
         available_out_values, available_crit_values,
-        auto_select_crits, plot, plot_latency_breakdown,
+        auto_select_crits, plot, plot_cpu_usage, plot_latency_breakdown,
     )
 
     locks      = discover_locks(data_dir)
     colors, markers = build_styles(locks)
-    data       = load_data(data_dir, locks, required_fields=LATENCY_PLOT_REQUIRED_FIELDS)
+    data       = load_data(
+        data_dir,
+        locks,
+        required_fields=LATENCY_PLOT_REQUIRED_FIELDS | CPU_PLOT_REQUIRED_FIELDS,
+    )
     out_values = available_out_values(data)
     crit_values = available_crit_values(data)
 
@@ -93,6 +98,7 @@ def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tu
 
     throughput_path = os.path.join(out_dir, f"throughput_out{out:04d}.png")
     latency_path = os.path.join(out_dir, f"latency_breakdown_out{out:04d}.png")
+    cpu_path = os.path.join(out_dir, f"cpu_out{out:04d}.png")
     plot(data, locks, colors, markers, out, crits, out_values, throughput_path, show=False)
     plot_latency_breakdown(
         data,
@@ -105,7 +111,8 @@ def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tu
         latency_path,
         show=False,
     )
-    return throughput_path, latency_path
+    plot_cpu_usage(data, locks, colors, markers, out, crits, out_values, cpu_path, show=False)
+    return throughput_path, latency_path, cpu_path
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -145,8 +152,11 @@ def main():
 
     if args.jobs == 1:
         for i, (d, o, out, crits) in enumerate(tasks, 1):
-            throughput_path, latency_path = _run_one(d, o, out, crits)
-            print(f"[{i}/{len(tasks)}] throughput={throughput_path} latency={latency_path}")
+            throughput_path, latency_path, cpu_path = _run_one(d, o, out, crits)
+            print(
+                f"[{i}/{len(tasks)}] throughput={throughput_path} "
+                f"latency={latency_path} cpu={cpu_path}"
+            )
     else:
         results = {}
         with ProcessPoolExecutor(max_workers=args.jobs) as pool:
@@ -160,13 +170,13 @@ def main():
                     results[out_val] = paths
                     print(
                         f"[{done}/{len(tasks)}] out={out_val}  →  "
-                        f"throughput={paths[0]} latency={paths[1]}"
+                        f"throughput={paths[0]} latency={paths[1]} cpu={paths[2]}"
                     )
                 except Exception as exc:
                     print(f"[{done}/{len(tasks)}] out={out_val}  失败: {exc}",
                           file=sys.stderr)
 
-    print(f"\n全部完成，共 {len(tasks) * 2} 张图片保存至 {out_dir}/")
+    print(f"\n全部完成，共 {len(tasks) * 3} 张图片保存至 {out_dir}/")
 
 
 if __name__ == "__main__":

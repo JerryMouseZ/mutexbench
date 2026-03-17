@@ -10,6 +10,7 @@ HANDOFF_FIELD = "avg_lock_handoff_ns_estimated"
 LEGACY_HANDOFF_FIELD = "avg_unlock_to_next_lock_ns_all"
 THROUGHPUT_FIELD = "mean_throughput_ops_per_sec"
 CPU_FIELD = "avg_cpu_pct"
+LEGACY_CPU_FIELD = "cpu_pct"
 
 RAW_FIELDNAMES = [
     "threads",
@@ -80,6 +81,8 @@ LATENCY_PLOT_REQUIRED_FIELDS = DEFAULT_PLOT_REQUIRED_FIELDS | {
     HANDOFF_FIELD,
 }
 
+CPU_PLOT_REQUIRED_FIELDS = DEFAULT_PLOT_REQUIRED_FIELDS | {CPU_FIELD}
+
 
 def read_csv_rows(path: str | Path) -> tuple[list[str], list[dict[str, str]]]:
     csv_path = Path(path)
@@ -108,6 +111,13 @@ def _resolve_handoff_key(field_set: set[str], source: str | Path) -> str:
     if LEGACY_HANDOFF_FIELD in field_set:
         return LEGACY_HANDOFF_FIELD
     raise ValueError(f"{source}: missing raw/summary columns ['{HANDOFF_FIELD}']")
+
+
+def _resolve_cpu_key(field_set: set[str]) -> str | None:
+    for candidate in (CPU_FIELD, LEGACY_CPU_FIELD):
+        if candidate in field_set:
+            return candidate
+    return None
 
 
 def _normalize_wait_value(
@@ -145,6 +155,7 @@ def normalize_raw_rows(
 
     handoff_key = _resolve_handoff_key(field_set, source)
     wait_key = WAIT_FIELD if WAIT_FIELD in field_set else None
+    cpu_key = _resolve_cpu_key(field_set)
 
     out: list[dict[str, str]] = []
     for row in rows:
@@ -160,7 +171,7 @@ def normalize_raw_rows(
             WAIT_FIELD: _normalize_wait_value(row, wait_key),
             HANDOFF_FIELD: row[handoff_key].strip(),
             "lock_hold_samples": row["lock_hold_samples"].strip(),
-            CPU_FIELD: row.get(CPU_FIELD, "").strip(),
+            CPU_FIELD: row[cpu_key].strip() if cpu_key is not None else "",
         }
         required_values = RAW_REQUIRED_FOR_CANONICAL | {WAIT_FIELD, HANDOFF_FIELD}
         missing_values = [k for k in required_values if normalized.get(k, "") == ""]
@@ -247,6 +258,7 @@ def normalize_summary_rows(
     if HANDOFF_FIELD in field_set or LEGACY_HANDOFF_FIELD in field_set:
         handoff_key = _resolve_handoff_key(field_set, source)
     wait_key = WAIT_FIELD if WAIT_FIELD in field_set else None
+    cpu_key = _resolve_cpu_key(field_set)
 
     out: list[dict[str, str]] = []
     for row in rows:
@@ -262,7 +274,7 @@ def normalize_summary_rows(
             WAIT_FIELD: _normalize_wait_value(row, wait_key),
             HANDOFF_FIELD: row[handoff_key].strip() if handoff_key is not None else "",
             "lock_hold_samples": row.get("lock_hold_samples", "").strip(),
-            CPU_FIELD: row.get(CPU_FIELD, "").strip(),
+            CPU_FIELD: row[cpu_key].strip() if cpu_key is not None else "",
         }
 
         missing_values = [name for name in required if normalized.get(name, "") == ""]

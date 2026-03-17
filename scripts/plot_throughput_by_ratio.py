@@ -2,7 +2,7 @@
 """
 plot_throughput_by_ratio.py
 绘制各互斥锁在不同临界区比例下的吞吐量 vs 线程数折线图，
-并额外生成等待/持锁/锁交接时间分解图。
+并额外生成等待/持锁/锁交接时间分解图和 CPU 使用率图。
 
 用法：
     python3 plot_throughput_by_ratio.py [--out OUT] [--data DIR] [--save PATH]
@@ -15,6 +15,7 @@ plot_throughput_by_ratio.py
     --save PATH        吞吐量图片路径（默认：<data>/throughput_by_ratio.png）
     --save-latency PATH
                        时延分解图路径（默认：<data>/latency_breakdown_by_ratio.png）
+    --save-cpu PATH    CPU 使用率图路径（默认：<data>/cpu_by_ratio.png）
     --crits C,…        逗号分隔的 critical_iters 列表（默认自动选 5 个）
     --no-show          不弹出交互式窗口（在无头环境下自动生效）
 """
@@ -23,7 +24,7 @@ import argparse
 import os
 import sys
 
-from bench_csv_schema import LATENCY_PLOT_REQUIRED_FIELDS, load_plot_rows
+from bench_csv_schema import CPU_FIELD, CPU_PLOT_REQUIRED_FIELDS, LATENCY_PLOT_REQUIRED_FIELDS, load_plot_rows
 
 try:
     import matplotlib
@@ -60,6 +61,7 @@ LATENCY_METRICS = [
     ("avg_lock_hold_ns", "Hold Time (ns/op)"),
     ("avg_lock_handoff_ns_estimated", "Handoff Est. (ns/op)"),
 ]
+ALL_PLOT_REQUIRED_FIELDS = LATENCY_PLOT_REQUIRED_FIELDS | CPU_PLOT_REQUIRED_FIELDS
 
 
 def discover_locks(data_dir: str) -> list[str]:
@@ -291,7 +293,8 @@ def _configure_x_axis(ax, ymax: float, annotate_cpus: bool) -> None:
 
 
 def _style_axis(ax, ymax: float, yfmt: str = "%.2f") -> None:
-    ax.set_ylim(0, ymax)
+    safe_ymax = ymax if ymax > 0 else 1.0
+    ax.set_ylim(0, safe_ymax)
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter(yfmt))
     ax.tick_params(axis="y", labelsize=8.5)
     ax.grid(True, linestyle=":", alpha=0.5, color="#DDDDDD", zorder=0)
@@ -515,6 +518,97 @@ def plot_latency_breakdown(
     plt.close(fig)
 
 
+def plot_cpu_usage(
+    data: dict[str, list[dict[str, str]]],
+    locks: list[str],
+    colors: dict[str, str],
+    markers: dict[str, str],
+    out: int,
+    crits: list[int],
+    out_values: list[int],
+    save_path: str,
+    show: bool,
+) -> None:
+    require_matplotlib()
+
+    interpolated = out not in out_values
+    out_label = f"out={out}" + (" (interpolated)" if interpolated else "")
+    ncols = max(4, len(locks))
+
+    fig, axes = plt.subplots(1, len(crits), figsize=(5 * len(crits) + 4, 5.8))
+    if len(crits) == 1:
+        axes = [axes]
+    fig.patch.set_facecolor("#F7F7F7")
+
+    for ax, crit in zip(axes, crits):
+        ratio = crit / (crit + out)
+        ax.set_facecolor("white")
+
+        series: dict[str, list[float | None]] = {}
+        all_ys: list[float] = []
+        for lock in locks:
+            ys = [
+                get_metric_interp(data, lock, threads, crit, out, CPU_FIELD, out_values)
+                for threads in THREADS_LIST
+            ]
+            series[lock] = ys
+            all_ys.extend(y for y in ys if y is not None)
+
+        ymax = max(all_ys) * 1.12 if all_ys else 100.0
+        _configure_x_axis(ax, ymax, annotate_cpus=True)
+
+        for lock in locks:
+            xs = [threads for threads, value in zip(THREADS_LIST, series[lock]) if value is not None]
+            ys = [value for value in series[lock] if value is not None]
+            ax.plot(
+                xs,
+                ys,
+                color=colors[lock],
+                marker=markers[lock],
+                linewidth=2.2,
+                markersize=6,
+                markerfacecolor="white",
+                markeredgewidth=1.8,
+                label=lock,
+                zorder=3,
+            )
+
+        _style_axis(ax, ymax, yfmt="%.0f")
+        ax.set_title(f"ratio = {ratio:.2f}  (crit={crit})", fontsize=11, fontweight="bold", pad=10)
+        ax.set_xlabel("Threads", fontsize=9.5, labelpad=4)
+        ax.set_ylabel("CPU Usage (%)", fontsize=9.5)
+
+    handles, labels_ = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels_,
+        loc="lower center",
+        ncol=ncols,
+        fontsize=11,
+        frameon=True,
+        framealpha=0.95,
+        edgecolor="#CCCCCC",
+        bbox_to_anchor=(0.5, -0.02),
+        handlelength=2.2,
+        columnspacing=2.0,
+    )
+
+    fig.suptitle(
+        f"Mutex CPU Usage vs. Thread Count  -  {out_label}",
+        fontsize=13.5,
+        fontweight="bold",
+        y=1.02,
+    )
+
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    plt.savefig(save_path, dpi=160, bbox_inches="tight", facecolor=fig.get_facecolor())
+    print(f"Saved: {save_path}")
+
+    if show:
+        plt.show()
+    plt.close(fig)
+
+
 def parse_args() -> argparse.Namespace:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_data = os.path.join(script_dir, "..", "results-new")
@@ -534,6 +628,11 @@ def parse_args() -> argparse.Namespace:
         "--save-latency",
         default=None,
         help="时延分解图路径（默认：<data>/latency_breakdown_by_ratio.png）",
+    )
+    p.add_argument(
+        "--save-cpu",
+        default=None,
+        help="CPU 使用率图路径（默认：<data>/cpu_by_ratio.png）",
     )
     p.add_argument("--crits", default=None, help="逗号分隔的 critical_iters 列表，例如 '10,100,800'")
     p.add_argument("--no-show", action="store_true", help="不弹出交互式窗口")
@@ -558,7 +657,7 @@ def main() -> None:
     print(f"发现锁实现：{locks}")
 
     colors, markers = build_styles(locks)
-    data = load_data(data_dir, locks, required_fields=LATENCY_PLOT_REQUIRED_FIELDS)
+    data = load_data(data_dir, locks, required_fields=ALL_PLOT_REQUIRED_FIELDS)
     out_values = available_out_values(data)
     crit_values = available_crit_values(data)
 
@@ -574,6 +673,7 @@ def main() -> None:
     latency_save_path = args.save_latency or os.path.join(
         data_dir, "latency_breakdown_by_ratio.png"
     )
+    cpu_save_path = args.save_cpu or os.path.join(data_dir, "cpu_by_ratio.png")
 
     if args.out not in out_values:
         lo = max((v for v in out_values if v < args.out), default=None)
@@ -593,6 +693,7 @@ def main() -> None:
         latency_save_path,
         show,
     )
+    plot_cpu_usage(data, locks, colors, markers, args.out, crits, out_values, cpu_save_path, show)
 
 
 if __name__ == "__main__":

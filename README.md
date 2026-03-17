@@ -199,12 +199,15 @@ python3 scripts/plot_throughput_by_ratio.py \
 
 - `throughput_by_ratio.png`
 - `latency_breakdown_by_ratio.png`
+- `cpu_by_ratio.png`
 
 其中时延分解图按 ratio 展示三类每-op 指标：
 
 - `avg_wait_ns_estimated`
 - `avg_lock_hold_ns`
 - `avg_lock_handoff_ns_estimated`
+
+CPU 图按 ratio 展示 `avg_cpu_pct`，同时兼容旧/别名列 `cpu_pct`。
 
 批量按所有 `outside_iters` 出图：
 
