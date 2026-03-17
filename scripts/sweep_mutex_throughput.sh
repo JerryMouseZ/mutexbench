@@ -353,10 +353,23 @@ extract_avg_cpu_pct() {
       return value ~ /^-?[0-9]+([.][0-9]+)?$/
     }
 
-    $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $3 ~ /^[0-9]+$/ && is_float($8) {
-      pid = $3
-      counts[pid] += 1
-      samples[pid SUBSEP counts[pid]] = $8 + 0.0
+    function is_meridiem(value) {
+      return value == "AM" || value == "PM"
+    }
+
+    $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ {
+      pid_field = 3
+      cpu_field = 8
+      if (is_meridiem($2)) {
+        pid_field = 4
+        cpu_field = 9
+      }
+
+      if ($(pid_field) ~ /^[0-9]+$/ && is_float($(cpu_field))) {
+        pid = $(pid_field)
+        counts[pid] += 1
+        samples[pid SUBSEP counts[pid]] = $(cpu_field) + 0.0
+      }
     }
 
     END {
@@ -422,7 +435,7 @@ for t in "${threads[@]}"; do
         fi
         bench_pid=$!
 
-        pidstat -u -h -p "$bench_pid" 1 >"$pidstat_output_path" 2>&1 &
+        env LC_ALL=C pidstat -u -h -p "$bench_pid" 1 >"$pidstat_output_path" 2>&1 &
         pidstat_pid=$!
 
         if wait "$bench_pid"; then
