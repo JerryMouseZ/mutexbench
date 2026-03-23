@@ -143,6 +143,7 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
 - `lb_simple`（通过 `LD_PRELOAD=liblb_simple.so`）
+- `lb_simple_no_bpf`（通过 `LD_PRELOAD=liblb_simple.so`，并设置 `LB_SIMPLE_DISABLE_BPF=1`）
 
 ## 结果与指标
 

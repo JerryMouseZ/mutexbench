@@ -31,6 +31,7 @@ Options:
                                6) non-builtin short name (e.g. flexguard),
                                   resolved as $FLEXGUARD_DIR/build/interpose_<name>.sh
                                7) lb_simple (run benchmark with LD_PRELOAD=liblb_simple.so)
+                               8) lb_simple_no_bpf (same as lb_simple with LB_SIMPLE_DISABLE_BPF=1)
                              Name conflict rule:
                                - Builtin names always run as native locks.
                                - To run external lock with a builtin-like name,
@@ -43,7 +44,7 @@ Options:
   --output-root DIR          Output root directory (default: <mutexbench>/results)
   --sudo-mode MODE           MODE in {all,auto,none} (default: all)
                              all: sudo for every lock run
-                             auto: sudo only for flexguard*/hybridlock*/lb_simple locks
+                             auto: sudo only for flexguard*/hybridlock*/lb_simple* locks
                              none: never sudo
   --timeslice-extension M    off|auto|require (default: off)
   --with-scx-lavd            Run scx_lavd in background for the whole sweep:
@@ -158,6 +159,39 @@ resolve_lb_simple_lib_path() {
   fi
 
   printf "%s\n" "$default_release"
+}
+
+resolve_flexguard_short_lock_script() {
+  local short_name="$1"
+  local candidate_script=""
+  local build_target=""
+
+  if [[ -z "${FLEXGUARD_DIR:-}" ]]; then
+    return 1
+  fi
+
+  candidate_script="$FLEXGUARD_DIR/build/interpose_${short_name}.sh"
+  if [[ -x "$candidate_script" ]]; then
+    printf "%s\n" "$candidate_script"
+    return 0
+  fi
+
+  if [[ ! -f "$FLEXGUARD_DIR/Makefile" ]]; then
+    return 1
+  fi
+
+  build_target="build/interpose_${short_name}.sh"
+  echo "Building flexguard helper: ${build_target}" >&2
+  if ! make -C "$FLEXGUARD_DIR" "$build_target" >/dev/null; then
+    echo "Failed to build flexguard helper: ${build_target}" >&2
+    return 1
+  fi
+  if [[ ! -x "$candidate_script" ]]; then
+    echo "Built flexguard helper is not executable: $candidate_script" >&2
+    return 1
+  fi
+
+  printf "%s\n" "$candidate_script"
 }
 
 contains_flag() {
@@ -373,7 +407,7 @@ should_auto_sudo() {
   local lock_script="${2:-}"
 
   case "$lock_name" in
-    flexguard*|hybridlock*|lb_simple)
+    flexguard*|hybridlock*|lb_simple*)
       return 0
       ;;
   esac
@@ -682,6 +716,7 @@ for item in "${lock_items[@]}"; do
   lock_kind="hook"
   bench_lock_kind=""
   lb_simple_lib=""
+  lb_simple_disable_bpf="0"
   if [[ "$item" == *=* ]]; then
     lock_name="${item%%=*}"
     lock_script="${item#*=}"
@@ -711,6 +746,12 @@ for item in "${lock_items[@]}"; do
         lock_name="lb_simple"
         lock_script=""
         ;;
+      lb_simple_no_bpf)
+        lock_kind="lb_simple"
+        lock_name="lb_simple_no_bpf"
+        lock_script=""
+        lb_simple_disable_bpf="1"
+        ;;
       *)
         if is_builtin_lock_kind "$item"; then
           lock_kind="native"
@@ -728,9 +769,9 @@ for item in "${lock_items[@]}"; do
   fi
 
   if [[ "$lock_kind" == "hook" && "$lock_script" != */* && "$lock_script" != *.sh && -n "${FLEXGUARD_DIR:-}" ]]; then
-    candidate_script="$FLEXGUARD_DIR/build/interpose_${lock_script}.sh"
-    if [[ -x "$candidate_script" ]]; then
-      lock_script="$candidate_script"
+    resolved_short_lock_script=""
+    if resolved_short_lock_script="$(resolve_flexguard_short_lock_script "$lock_script")"; then
+      lock_script="$resolved_short_lock_script"
     fi
   fi
 
@@ -759,7 +800,7 @@ for item in "${lock_items[@]}"; do
     fi
   elif [[ "$lock_kind" == "lb_simple" ]]; then
     if [[ "$with_scx_lavd" == "1" ]]; then
-      echo "lock=lb_simple cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
+      echo "lock=${lock_name} cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
       exit 1
     fi
     lb_simple_lib="$(resolve_lb_simple_lib_path)"
@@ -792,6 +833,9 @@ for item in "${lock_items[@]}"; do
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
+    if [[ "$lb_simple_disable_bpf" == "1" ]]; then
+      cmd=(env "LB_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
+    fi
   else
     cmd=(
       "$lock_script"
