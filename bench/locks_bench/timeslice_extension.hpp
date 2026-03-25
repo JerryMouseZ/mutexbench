@@ -25,8 +25,7 @@ struct LockBenchOptions {
       TimesliceExtensionMode::kOff;
 };
 
-inline const char *TimesliceExtensionModeToString(
-    TimesliceExtensionMode mode) {
+inline const char *TimesliceExtensionModeToString(TimesliceExtensionMode mode) {
   switch (mode) {
   case TimesliceExtensionMode::kOff:
     return "off";
@@ -101,8 +100,7 @@ inline void CompilerBarrier() noexcept {
 }
 
 inline bool IsUnsupportedErrno(int err) noexcept {
-  return err == EOPNOTSUPP || err == ENOTSUPP || err == ENOSYS ||
-         err == EINVAL;
+  return err == EOPNOTSUPP || err == ENOTSUPP || err == ENOSYS || err == EINVAL;
 }
 
 struct TimesliceThreadState {
@@ -190,8 +188,7 @@ inline const TimesliceThreadState &EnsureTimesliceThreadState() noexcept {
                                                  const char *reason,
                                                  int error_number) {
   if (error_number != 0) {
-    std::fprintf(stderr,
-                 "timeslice extension %s failed: %s (errno=%d, %s)\n",
+    std::fprintf(stderr, "timeslice extension %s failed: %s (errno=%d, %s)\n",
                  context, reason, error_number, std::strerror(error_number));
   } else {
     std::fprintf(stderr, "timeslice extension %s failed: %s\n", context,
@@ -208,8 +205,8 @@ struct TimesliceExtensionStatus {
   int error_number{0};
 };
 
-inline TimesliceExtensionStatus CurrentThreadTimesliceExtensionStatus(
-    TimesliceExtensionMode mode) noexcept {
+inline TimesliceExtensionStatus
+CurrentThreadTimesliceExtensionStatus(TimesliceExtensionMode mode) noexcept {
   if (mode == TimesliceExtensionMode::kOff) {
     return {};
   }
@@ -267,7 +264,6 @@ public:
 
     detail::CompilerBarrier();
     state.rseq->slice_ctrl.request = 0;
-    detail::CompilerBarrier();
 
     if (state.rseq->slice_ctrl.granted == 0) {
       return;

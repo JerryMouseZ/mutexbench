@@ -19,9 +19,8 @@ struct McsTasTseLock {
     bool timeslice_requested{false};
   };
 
-  explicit McsTasTseLock(
-      locks_bench::TimesliceExtensionMode timeslice_mode =
-          locks_bench::TimesliceExtensionMode::kOff)
+  explicit McsTasTseLock(locks_bench::TimesliceExtensionMode timeslice_mode =
+                             locks_bench::TimesliceExtensionMode::kOff)
       : timeslice_mode_(timeslice_mode) {}
 
   void prepare_thread() const {
@@ -34,6 +33,7 @@ struct McsTasTseLock {
   [[nodiscard]] inline LockState lock() {
     // Fast path: single TAS probe.
     if (!locked_.exchange(true, std::memory_order_acquire)) {
+      ThreadTimesliceExtension(timeslice_mode_).on_critical_section_enter();
       return {};
     }
 
@@ -54,10 +54,8 @@ struct McsTasTseLock {
     // Request a slice extension once this thread becomes the designated
     // spinner that is about to inherit the lock.
     bool timeslice_requested = false;
-    if (timeslice_mode_ != locks_bench::TimesliceExtensionMode::kOff) {
-      ThreadTimesliceExtension(timeslice_mode_).on_critical_section_enter();
-      timeslice_requested = true;
-    }
+    ThreadTimesliceExtension(timeslice_mode_).on_critical_section_enter();
+    timeslice_requested = true;
     while (locked_.exchange(true, std::memory_order_acquire)) {
       Pause();
     }
@@ -85,8 +83,8 @@ struct McsTasTseLock {
   inline void unlock(LockState &state) {
     locked_.store(false, std::memory_order_release);
     if (state.timeslice_requested) {
-      ThreadTimesliceExtension(timeslice_mode_).on_critical_section_exit();
-      state.timeslice_requested = false;
+      ThreadTimesliceExtension(locks_bench::TimesliceExtensionMode::kRequire)
+          .on_critical_section_exit();
     }
   }
 
