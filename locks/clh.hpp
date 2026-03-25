@@ -4,6 +4,7 @@
 #include <cassert>
 #include <concepts>
 #include <functional>
+#include <thread>
 #include <utility>
 
 #if defined(__x86_64__) || defined(__i386__)

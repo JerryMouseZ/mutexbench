@@ -4,9 +4,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <emmintrin.h>
 #include <iomanip>
 #if defined(__x86_64__) || defined(__i386__)
+#include <emmintrin.h>
 #include <immintrin.h>
 #endif
 #include <iostream>
@@ -20,6 +20,16 @@
 #include "bench/locks_bench/lock_kind.hpp"
 
 using Clock = std::chrono::steady_clock;
+
+inline void SpinPause() noexcept {
+#if defined(__x86_64__) || defined(__i386__)
+  _mm_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+  asm volatile("yield" ::: "memory");
+#else
+  std::this_thread::yield();
+#endif
+}
 
 inline uint64_t ReadTsc() {
 #if defined(__x86_64__) || defined(__i386__)
@@ -273,7 +283,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
       warmup_done.fetch_add(1, std::memory_order_release);
       while (!measure_start.load(std::memory_order_acquire)) {
-        _mm_pause();
+        SpinPause();
       }
 
       const auto thread_measure_start = Clock::now();
