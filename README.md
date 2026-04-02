@@ -145,6 +145,12 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `lb_simple`（通过 `LD_PRELOAD=liblb_simple.so`）
 - `lb_simple_no_bpf`（通过 `LD_PRELOAD=liblb_simple.so`，并设置 `LB_SIMPLE_DISABLE_BPF=1`）
 
+并发说明：
+
+- `scripts/sweep_mutex_throughput_multi_lock.sh` 现在会通过 `flock` 使用全局锁文件 `/tmp/mutexbench-sweep-multi-lock.lock`
+- 当多个来自不同目录、不同 worktree、甚至不同用户的实例同时启动时，后来的实例会阻塞排队，不会并行运行影响测量结果
+- 如需在测试或隔离环境中覆盖锁文件路径，可设置环境变量 `MUTEXBENCH_MULTI_LOCK_LOCK_FILE=/path/to/lock`
+
 ## 结果与指标
 
 ### `raw.csv`（逐次运行）

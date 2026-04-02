@@ -61,6 +61,9 @@ Options:
   -h, --help                 Show this help
 
 All unknown args are forwarded to sweep script.
+This script serializes globally with flock so concurrent invocations queue.
+Default queue lock file: /tmp/mutexbench-sweep-multi-lock.lock
+Override queue lock file with env: MUTEXBENCH_MULTI_LOCK_LOCK_FILE=/path/to/lock
 Do not pass --output-raw / --output-summary; they are generated per lock:
   <output-root>/<lock>/raw.csv
   <output-root>/<lock>/summary.csv
@@ -192,6 +195,49 @@ resolve_flexguard_short_lock_script() {
   fi
 
   printf "%s\n" "$candidate_script"
+}
+
+ensure_queue_lock_file() {
+  local path="$1"
+  local dir=""
+
+  dir="$(dirname "$path")"
+  mkdir -p "$dir"
+
+  if [[ ! -e "$path" ]]; then
+    (
+      umask 000
+      : > "$path"
+    )
+  fi
+  chmod 0644 "$path" >/dev/null 2>&1 || true
+
+  if [[ ! -r "$path" ]]; then
+    echo "Queue lock file is not readable: $path" >&2
+    echo "Fix permissions first, for example: sudo chmod 0644 '$path'" >&2
+    return 1
+  fi
+}
+
+acquire_queue_lock() {
+  local path="$1"
+
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "flock is required to serialize multi-lock sweeps, but it was not found in PATH." >&2
+    return 1
+  fi
+
+  ensure_queue_lock_file "$path"
+
+  exec {QUEUE_LOCK_FD}<"$path"
+  if flock -n "$QUEUE_LOCK_FD"; then
+    echo "[queue] Acquired global multi-lock sweep lock: $path" >&2
+    return 0
+  fi
+
+  echo "[queue] Waiting for global multi-lock sweep lock: $path" >&2
+  flock "$QUEUE_LOCK_FD"
+  echo "[queue] Acquired global multi-lock sweep lock: $path" >&2
 }
 
 contains_flag() {
@@ -573,6 +619,7 @@ with_scx_lavd="0"
 scx_lavd_bin="/mnt/home/jz/scx/target/release/scx_lavd"
 lb_simple_sched_ext_conflict="stop"
 dry_run="0"
+queue_lock_file="${MUTEXBENCH_MULTI_LOCK_LOCK_FILE:-/tmp/mutexbench-sweep-multi-lock.lock}"
 declare -a sweep_args=()
 
 while [[ $# -gt 0 ]]; do
@@ -659,6 +706,12 @@ if [[ "$lb_simple_sched_ext_conflict" != "stop" && "$lb_simple_sched_ext_conflic
   echo "--lb-simple-sched-ext-conflict must be one of: stop, error, ignore" >&2
   exit 1
 fi
+
+queue_lock_file="$(expand_home "$queue_lock_file")"
+if [[ "$queue_lock_file" != /* ]]; then
+  queue_lock_file="$MUTEXBENCH_DIR/$queue_lock_file"
+fi
+acquire_queue_lock "$queue_lock_file"
 
 sweep_args+=(--timeslice-extension "$timeslice_extension")
 
