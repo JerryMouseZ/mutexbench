@@ -142,8 +142,9 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - 内置锁名（如 `mutex,mcs,clh`）
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
-- `lb_simple`（通过 `LD_PRELOAD=liblb_simple.so`）
-- `lb_simple_no_bpf`（通过 `LD_PRELOAD=liblb_simple.so`，并设置 `LB_SIMPLE_DISABLE_BPF=1`）
+- `lb_simple`（通过 `LD_PRELOAD=target/release/liblb_simple.so`）
+- `lb_simple_no_bpf`（通过 `LD_PRELOAD=target/release/liblb_simple.so`，并设置 `LB_SIMPLE_DISABLE_BPF=1`）
+- `flexguard_simple`（通过 `LD_PRELOAD=target/release/libflexguard.so`）
 
 并发说明：
 

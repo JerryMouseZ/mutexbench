@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_ROOT="$(cd -- "${MUTEXBENCH_DIR}/../.." && pwd)"
+LB_SIMPLE_DEBUG_COUNTERS="${LB_SIMPLE_DEBUG_COUNTERS:-}"
 if [[ -n "${FLEXGUARD_DIR:-}" ]]; then
   FLEXGUARD_DIR="$(cd -- "$FLEXGUARD_DIR" && pwd)"
 elif [[ -d "${MUTEXBENCH_DIR}/../flexguard" ]]; then
@@ -32,6 +33,7 @@ Options:
                                   resolved as $FLEXGUARD_DIR/build/interpose_<name>.sh
                                7) lb_simple (run benchmark with LD_PRELOAD=liblb_simple.so)
                                8) lb_simple_no_bpf (same as lb_simple with LB_SIMPLE_DISABLE_BPF=1)
+                               9) flexguard_simple (run benchmark with LD_PRELOAD=libflexguard.so)
                              Name conflict rule:
                                - Builtin names always run as native locks.
                                - To run external lock with a builtin-like name,
@@ -40,6 +42,10 @@ Options:
                                1) use $LB_SIMPLE_LIB if set
                                2) else <repo>/target/release/liblb_simple.so
                                3) else <repo>/target/debug/liblb_simple.so
+                             For flexguard_simple library path:
+                               1) use $FLEXGUARD_SIMPLE_LIB if set
+                               2) else <repo>/target/release/libflexguard.so
+                               3) else <repo>/target/debug/libflexguard.so
   --sweep-script PATH        Sweep script to run (default: <mutexbench>/scripts/sweep_mutex_throughput.sh)
   --output-root DIR          Output root directory (default: <mutexbench>/results)
   --sudo-mode MODE           MODE in {all,auto,none} (default: all)
@@ -126,10 +132,11 @@ resolve_executable_path() {
   esac
 }
 
-resolve_lb_simple_lib_path() {
-  local path="${LB_SIMPLE_LIB:-}"
-  local default_release="$PROJECT_ROOT/target/release/liblb_simple.so"
-  local default_debug="$PROJECT_ROOT/target/debug/liblb_simple.so"
+resolve_preload_lib_path() {
+  local env_var_name="$1"
+  local default_release="$2"
+  local default_debug="$3"
+  local path="${!env_var_name:-}"
 
   if [[ -n "$path" ]]; then
     path="$(expand_home "$path")"
@@ -162,6 +169,20 @@ resolve_lb_simple_lib_path() {
   fi
 
   printf "%s\n" "$default_release"
+}
+
+resolve_lb_simple_lib_path() {
+  resolve_preload_lib_path \
+    "LB_SIMPLE_LIB" \
+    "$PROJECT_ROOT/target/release/liblb_simple.so" \
+    "$PROJECT_ROOT/target/debug/liblb_simple.so"
+}
+
+resolve_flexguard_simple_lib_path() {
+  resolve_preload_lib_path \
+    "FLEXGUARD_SIMPLE_LIB" \
+    "$PROJECT_ROOT/target/release/libflexguard.so" \
+    "$PROJECT_ROOT/target/debug/libflexguard.so"
 }
 
 resolve_flexguard_short_lock_script() {
@@ -769,6 +790,7 @@ for item in "${lock_items[@]}"; do
   lock_kind="hook"
   bench_lock_kind=""
   lb_simple_lib=""
+  flexguard_simple_lib=""
   lb_simple_disable_bpf="0"
   if [[ "$item" == *=* ]]; then
     lock_name="${item%%=*}"
@@ -804,6 +826,11 @@ for item in "${lock_items[@]}"; do
         lock_name="lb_simple_no_bpf"
         lock_script=""
         lb_simple_disable_bpf="1"
+        ;;
+      flexguard_simple)
+        lock_kind="flexguard_simple"
+        lock_name="flexguard_simple"
+        lock_script=""
         ;;
       *)
         if is_builtin_lock_kind "$item"; then
@@ -859,7 +886,18 @@ for item in "${lock_items[@]}"; do
     lb_simple_lib="$(resolve_lb_simple_lib_path)"
     if [[ ! -f "$lb_simple_lib" ]]; then
       echo "lb_simple library not found: $lb_simple_lib" >&2
-      echo "Build first (cargo build --release) or set LB_SIMPLE_LIB to liblb_simple.so path." >&2
+      echo "Build first (cargo build -p lb_simple --release) or set LB_SIMPLE_LIB to liblb_simple.so path." >&2
+      exit 1
+    fi
+  elif [[ "$lock_kind" == "flexguard_simple" ]]; then
+    if [[ "$with_scx_lavd" == "1" ]]; then
+      echo "lock=${lock_name} cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
+      exit 1
+    fi
+    flexguard_simple_lib="$(resolve_flexguard_simple_lib_path)"
+    if [[ ! -f "$flexguard_simple_lib" ]]; then
+      echo "flexguard_simple library not found: $flexguard_simple_lib" >&2
+      echo "Build first (cargo build -p libflexguard --release) or set FLEXGUARD_SIMPLE_LIB to libflexguard.so path." >&2
       exit 1
     fi
   fi
@@ -887,8 +925,19 @@ for item in "${lock_items[@]}"; do
       --output-summary "$summary_out"
     )
     if [[ "$lb_simple_disable_bpf" == "1" ]]; then
-      cmd=(env "LB_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "LB_SIMPLE_DEBUG_COUNTERS=${LB_SIMPLE_DEBUG_COUNTERS}" "LB_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
+    else
+      cmd=(env "LB_SIMPLE_DEBUG_COUNTERS=${LB_SIMPLE_DEBUG_COUNTERS}" "${cmd[@]}")
     fi
+  elif [[ "$lock_kind" == "flexguard_simple" ]]; then
+    cmd=(
+      "$sweep_script"
+      "${sweep_args[@]}"
+      --bench-ld-preload "$flexguard_simple_lib"
+      --lock-kind "mutex"
+      --output-raw "$raw_out"
+      --output-summary "$summary_out"
+    )
   else
     cmd=(
       "$lock_script"
@@ -921,6 +970,8 @@ for item in "${lock_items[@]}"; do
   fi
 
   if [[ "$lock_kind" == "lb_simple" && "$dry_run" != "1" ]]; then
+    ensure_lb_simple_sched_ext_ready "$should_sudo" "$lb_simple_sched_ext_conflict"
+  elif [[ "$lock_kind" == "flexguard_simple" && "$dry_run" != "1" ]]; then
     ensure_lb_simple_sched_ext_ready "$should_sudo" "$lb_simple_sched_ext_conflict"
   fi
 
