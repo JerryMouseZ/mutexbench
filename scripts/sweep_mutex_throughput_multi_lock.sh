@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_ROOT="$(cd -- "${MUTEXBENCH_DIR}/../.." && pwd)"
-LB_SIMPLE_DEBUG_COUNTERS="${LB_SIMPLE_DEBUG_COUNTERS:-}"
+MCS_TAS_SIMPLE_DEBUG_COUNTERS="${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}"
 if [[ -n "${FLEXGUARD_DIR:-}" ]]; then
   FLEXGUARD_DIR="$(cd -- "$FLEXGUARD_DIR" && pwd)"
 elif [[ -d "${MUTEXBENCH_DIR}/../flexguard" ]]; then
@@ -925,9 +925,9 @@ for item in "${lock_items[@]}"; do
       --output-summary "$summary_out"
     )
     if [[ "$mcs_tas_simple_disable_bpf" == "1" ]]; then
-      cmd=(env "LB_SIMPLE_DEBUG_COUNTERS=${LB_SIMPLE_DEBUG_COUNTERS}" "LB_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "MCS_TAS_SIMPLE_DEBUG_COUNTERS=${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}" "MCS_TAS_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "LB_SIMPLE_DEBUG_COUNTERS=${LB_SIMPLE_DEBUG_COUNTERS}" "${cmd[@]}")
+      cmd=(env "MCS_TAS_SIMPLE_DEBUG_COUNTERS=${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   elif [[ "$lock_kind" == "flexguard_simple" ]]; then
     cmd=(

@@ -143,7 +143,7 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
 - `mcs_tas_simple`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`）
-- `mcs_tas_simple_no_bpf`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`，并设置 `LB_SIMPLE_DISABLE_BPF=1`）
+- `mcs_tas_simple_no_bpf`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`，并设置 `MCS_TAS_SIMPLE_DISABLE_BPF=1`）
 - `flexguard_simple`（通过 `LD_PRELOAD=target/release/libflexguard.so`）
 
 并发说明：
