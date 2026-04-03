@@ -1,5 +1,5 @@
   ./scripts/sweep_mutex_throughput_multi_lock.sh \
-    --locks mcs,mcs-tas,flexguard,lb_simple \
+    --locks mcs,mcs-tas,flexguard,mcs_tas_simple \
     --outside-ns 350,2800 \
     --critical-ns 35,175,350,700,1400,2800,5600,11200 \
     --repeats 3 \

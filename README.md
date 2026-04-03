@@ -8,7 +8,7 @@
 - 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`mcs-tas-tse`、`mcstas-next`、`mcstas-next-tse`、`twa`、`clh`
 - 指标输出：吞吐量、锁内持有时间、平均等待时间近似、解锁到下一次加锁时间估计
 - 扫频脚本：自动生成 `raw.csv`（逐次运行）与 `summary.csv`（聚合统计）
-- 多锁对比：支持内置锁、外部 interpose 脚本、`lb_simple` 预加载模式
+- 多锁对比：支持内置锁、外部 interpose 脚本、`mcs_tas_simple` 预加载模式
 - Python 工具：多锁统计分析、线程推荐、吞吐量曲线图批量生成
 
 ## 目录结构
@@ -36,7 +36,7 @@
 - `make`
 - Python 3（绘图脚本需要 `matplotlib`）
 - `pidstat`（`scripts/sweep_mutex_throughput.sh` 需要，用于记录 steady CPU）
-- 可选：`sudo`、`bpftool`（使用 `lb_simple`/部分锁脚本时可能需要）
+- 可选：`sudo`、`bpftool`（使用 `mcs_tas_simple`/部分锁脚本时可能需要）
 
 ## 构建
 
@@ -142,8 +142,8 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - 内置锁名（如 `mutex,mcs,clh`）
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
-- `lb_simple`（通过 `LD_PRELOAD=target/release/liblb_simple.so`）
-- `lb_simple_no_bpf`（通过 `LD_PRELOAD=target/release/liblb_simple.so`，并设置 `LB_SIMPLE_DISABLE_BPF=1`）
+- `mcs_tas_simple`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`）
+- `mcs_tas_simple_no_bpf`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`，并设置 `LB_SIMPLE_DISABLE_BPF=1`）
 - `flexguard_simple`（通过 `LD_PRELOAD=target/release/libflexguard.so`）
 
 并发说明：

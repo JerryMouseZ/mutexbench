@@ -31,17 +31,17 @@ Options:
                                5) mcs=/path/to/interpose_custom.sh
                                6) non-builtin short name (e.g. flexguard),
                                   resolved as $FLEXGUARD_DIR/build/interpose_<name>.sh
-                               7) lb_simple (run benchmark with LD_PRELOAD=liblb_simple.so)
-                               8) lb_simple_no_bpf (same as lb_simple with LB_SIMPLE_DISABLE_BPF=1)
+                               7) mcs_tas_simple (run benchmark with LD_PRELOAD=libmcs_tas_simple.so)
+                               8) mcs_tas_simple_no_bpf (same as mcs_tas_simple with MCS_TAS_SIMPLE_DISABLE_BPF=1)
                                9) flexguard_simple (run benchmark with LD_PRELOAD=libflexguard.so)
                              Name conflict rule:
                                - Builtin names always run as native locks.
                                - To run external lock with a builtin-like name,
                                  use explicit script path or name=/path/to/script.sh
-                             For lb_simple library path:
-                               1) use $LB_SIMPLE_LIB if set
-                               2) else <repo>/target/release/liblb_simple.so
-                               3) else <repo>/target/debug/liblb_simple.so
+                             For mcs_tas_simple library path:
+                               1) use $MCS_TAS_SIMPLE_LIB if set
+                               2) else <repo>/target/release/libmcs_tas_simple.so
+                               3) else <repo>/target/debug/libmcs_tas_simple.so
                              For flexguard_simple library path:
                                1) use $FLEXGUARD_SIMPLE_LIB if set
                                2) else <repo>/target/release/libflexguard.so
@@ -50,7 +50,7 @@ Options:
   --output-root DIR          Output root directory (default: <mutexbench>/results)
   --sudo-mode MODE           MODE in {all,auto,none} (default: all)
                              all: sudo for every lock run
-                             auto: sudo only for flexguard*/hybridlock*/lb_simple* locks
+                             auto: sudo only for flexguard*/hybridlock*/mcs_tas_simple* locks
                              none: never sudo
   --timeslice-extension M    off|auto|require (default: off)
   --with-scx-lavd            Run scx_lavd in background for the whole sweep:
@@ -59,10 +59,10 @@ Options:
   --scx-lavd-bin PATH        scx_lavd binary path (default: /mnt/home/jz/scx/target/release/scx_lavd)
   --lb-simple-sched-ext-conflict MODE
                              MODE in {stop,error,ignore} (default: stop)
-                             How to handle active sched_ext before lb_simple:
+                             How to handle active sched_ext before mcs_tas_simple:
                                stop: terminate current sched_ext owner process(es)
                                error: fail fast with owner diagnostics
-                               ignore: run anyway (lb_simple may fail to initialize)
+                               ignore: run anyway (mcs_tas_simple may fail to initialize)
   --dry-run                  Print commands only, do not execute
   -h, --help                 Show this help
 
@@ -171,11 +171,11 @@ resolve_preload_lib_path() {
   printf "%s\n" "$default_release"
 }
 
-resolve_lb_simple_lib_path() {
+resolve_mcs_tas_simple_lib_path() {
   resolve_preload_lib_path \
-    "LB_SIMPLE_LIB" \
-    "$PROJECT_ROOT/target/release/liblb_simple.so" \
-    "$PROJECT_ROOT/target/debug/liblb_simple.so"
+    "MCS_TAS_SIMPLE_LIB" \
+    "$PROJECT_ROOT/target/release/libmcs_tas_simple.so" \
+    "$PROJECT_ROOT/target/debug/libmcs_tas_simple.so"
 }
 
 resolve_flexguard_simple_lib_path() {
@@ -373,7 +373,7 @@ sched_ext_ops_name() {
   fi
 }
 
-ensure_lb_simple_sched_ext_ready() {
+ensure_mcs_tas_simple_sched_ext_ready() {
   local use_sudo="$1"
   local conflict_mode="$2"
   local state=""
@@ -392,7 +392,7 @@ ensure_lb_simple_sched_ext_ready() {
   if [[ "$conflict_mode" == "error" ]]; then
     local owners="unknown"
     owners="$(format_sched_ext_owner_diag "$use_sudo" || true)"
-    echo "lb_simple requires exclusive sched_ext, but current state is enabled (ops=${ops:-unknown})." >&2
+    echo "mcs_tas_simple requires exclusive sched_ext, but current state is enabled (ops=${ops:-unknown})." >&2
     echo "Current owner(s): ${owners}" >&2
     echo "Stop active scheduler first, or use --lb-simple-sched-ext-conflict stop." >&2
     return 1
@@ -431,7 +431,7 @@ ensure_lb_simple_sched_ext_ready() {
     return 1
   fi
 
-  echo "[lb_simple] Active sched_ext detected (ops=${ops:-unknown}); stopping owner PIDs: ${owner_pids[*]}" >&2
+  echo "[mcs_tas_simple] Active sched_ext detected (ops=${ops:-unknown}); stopping owner PIDs: ${owner_pids[*]}" >&2
   for pid in "${owner_pids[@]}"; do
     run_with_optional_sudo "$use_sudo" kill -TERM "$pid" >/dev/null 2>&1 || true
   done
@@ -446,7 +446,7 @@ ensure_lb_simple_sched_ext_ready() {
   done
 
   if [[ "$state" == "enabled" ]]; then
-    echo "[lb_simple] sched_ext still enabled after SIGTERM; sending SIGKILL to: ${owner_pids[*]}" >&2
+    echo "[mcs_tas_simple] sched_ext still enabled after SIGTERM; sending SIGKILL to: ${owner_pids[*]}" >&2
     for pid in "${owner_pids[@]}"; do
       run_with_optional_sudo "$use_sudo" kill -KILL "$pid" >/dev/null 2>&1 || true
     done
@@ -462,7 +462,7 @@ ensure_lb_simple_sched_ext_ready() {
 
   state="$(sched_ext_state || true)"
   if [[ "$state" == "enabled" ]]; then
-    echo "Failed to clear active sched_ext (ops=${ops:-unknown}); lb_simple cannot start." >&2
+    echo "Failed to clear active sched_ext (ops=${ops:-unknown}); mcs_tas_simple cannot start." >&2
     return 1
   fi
 
@@ -474,7 +474,7 @@ should_auto_sudo() {
   local lock_script="${2:-}"
 
   case "$lock_name" in
-    flexguard*|hybridlock*|lb_simple*)
+    flexguard*|hybridlock*|mcs_tas_simple*)
       return 0
       ;;
   esac
@@ -638,7 +638,7 @@ sudo_mode="all"
 timeslice_extension="off"
 with_scx_lavd="0"
 scx_lavd_bin="/mnt/home/jz/scx/target/release/scx_lavd"
-lb_simple_sched_ext_conflict="stop"
+mcs_tas_simple_sched_ext_conflict="stop"
 dry_run="0"
 queue_lock_file="${MUTEXBENCH_MULTI_LOCK_LOCK_FILE:-/tmp/mutexbench-sweep-multi-lock.lock}"
 declare -a sweep_args=()
@@ -674,7 +674,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --lb-simple-sched-ext-conflict)
-      lb_simple_sched_ext_conflict="${2:-}"
+      mcs_tas_simple_sched_ext_conflict="${2:-}"
       shift 2
       ;;
     --dry-run)
@@ -723,7 +723,7 @@ if [[ "$timeslice_extension" != "off" && "$timeslice_extension" != "auto" && "$t
   echo "--timeslice-extension must be one of: off, auto, require" >&2
   exit 1
 fi
-if [[ "$lb_simple_sched_ext_conflict" != "stop" && "$lb_simple_sched_ext_conflict" != "error" && "$lb_simple_sched_ext_conflict" != "ignore" ]]; then
+if [[ "$mcs_tas_simple_sched_ext_conflict" != "stop" && "$mcs_tas_simple_sched_ext_conflict" != "error" && "$mcs_tas_simple_sched_ext_conflict" != "ignore" ]]; then
   echo "--lb-simple-sched-ext-conflict must be one of: stop, error, ignore" >&2
   exit 1
 fi
@@ -789,9 +789,9 @@ for item in "${lock_items[@]}"; do
   lock_script=""
   lock_kind="hook"
   bench_lock_kind=""
-  lb_simple_lib=""
+  mcs_tas_simple_lib=""
   flexguard_simple_lib=""
-  lb_simple_disable_bpf="0"
+  mcs_tas_simple_disable_bpf="0"
   if [[ "$item" == *=* ]]; then
     lock_name="${item%%=*}"
     lock_script="${item#*=}"
@@ -816,16 +816,16 @@ for item in "${lock_items[@]}"; do
           exit 1
         fi
         ;;
-      lb_simple)
-        lock_kind="lb_simple"
-        lock_name="lb_simple"
+      mcs_tas_simple)
+        lock_kind="mcs_tas_simple"
+        lock_name="mcs_tas_simple"
         lock_script=""
         ;;
-      lb_simple_no_bpf)
-        lock_kind="lb_simple"
-        lock_name="lb_simple_no_bpf"
+      mcs_tas_simple_no_bpf)
+        lock_kind="mcs_tas_simple"
+        lock_name="mcs_tas_simple_no_bpf"
         lock_script=""
-        lb_simple_disable_bpf="1"
+        mcs_tas_simple_disable_bpf="1"
         ;;
       flexguard_simple)
         lock_kind="flexguard_simple"
@@ -878,15 +878,15 @@ for item in "${lock_items[@]}"; do
       echo "Lock script is not executable: $lock_script" >&2
       exit 1
     fi
-  elif [[ "$lock_kind" == "lb_simple" ]]; then
+  elif [[ "$lock_kind" == "mcs_tas_simple" ]]; then
     if [[ "$with_scx_lavd" == "1" ]]; then
       echo "lock=${lock_name} cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
       exit 1
     fi
-    lb_simple_lib="$(resolve_lb_simple_lib_path)"
-    if [[ ! -f "$lb_simple_lib" ]]; then
-      echo "lb_simple library not found: $lb_simple_lib" >&2
-      echo "Build first (cargo build -p lb_simple --release) or set LB_SIMPLE_LIB to liblb_simple.so path." >&2
+    mcs_tas_simple_lib="$(resolve_mcs_tas_simple_lib_path)"
+    if [[ ! -f "$mcs_tas_simple_lib" ]]; then
+      echo "mcs_tas_simple library not found: $mcs_tas_simple_lib" >&2
+      echo "Build first (cargo build -p mcs_tas_simple --release) or set LB_SIMPLE_LIB to libmcs_tas_simple.so path." >&2
       exit 1
     fi
   elif [[ "$lock_kind" == "flexguard_simple" ]]; then
@@ -915,16 +915,16 @@ for item in "${lock_items[@]}"; do
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
-  elif [[ "$lock_kind" == "lb_simple" ]]; then
+  elif [[ "$lock_kind" == "mcs_tas_simple" ]]; then
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
-      --bench-ld-preload "$lb_simple_lib"
+      --bench-ld-preload "$mcs_tas_simple_lib"
       --lock-kind "mutex"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
-    if [[ "$lb_simple_disable_bpf" == "1" ]]; then
+    if [[ "$mcs_tas_simple_disable_bpf" == "1" ]]; then
       cmd=(env "LB_SIMPLE_DEBUG_COUNTERS=${LB_SIMPLE_DEBUG_COUNTERS}" "LB_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
     else
       cmd=(env "LB_SIMPLE_DEBUG_COUNTERS=${LB_SIMPLE_DEBUG_COUNTERS}" "${cmd[@]}")
@@ -969,10 +969,10 @@ for item in "${lock_items[@]}"; do
     run_cmd=(sudo -- "${cmd[@]}")
   fi
 
-  if [[ "$lock_kind" == "lb_simple" && "$dry_run" != "1" ]]; then
-    ensure_lb_simple_sched_ext_ready "$should_sudo" "$lb_simple_sched_ext_conflict"
+  if [[ "$lock_kind" == "mcs_tas_simple" && "$dry_run" != "1" ]]; then
+    ensure_mcs_tas_simple_sched_ext_ready "$should_sudo" "$mcs_tas_simple_sched_ext_conflict"
   elif [[ "$lock_kind" == "flexguard_simple" && "$dry_run" != "1" ]]; then
-    ensure_lb_simple_sched_ext_ready "$should_sudo" "$lb_simple_sched_ext_conflict"
+    ensure_mcs_tas_simple_sched_ext_ready "$should_sudo" "$mcs_tas_simple_sched_ext_conflict"
   fi
 
   if [[ "$lock_kind" == "native" ]]; then
