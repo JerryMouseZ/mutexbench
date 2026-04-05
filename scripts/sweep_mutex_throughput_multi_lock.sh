@@ -40,14 +40,17 @@ Options:
                                  use explicit script path or name=/path/to/script.sh
                              For mcs_tas_simple library path:
                                1) use $MCS_TAS_SIMPLE_LIB if set
-                               2) else <repo>/target/release/libmcs_tas_simple.so
-                               3) else <repo>/target/debug/libmcs_tas_simple.so
+                               2) else <repo>/target/<profile>/libmcs_tas_simple.so
+                               3) else <repo>/target/release/libmcs_tas_simple.so
+                               4) else <repo>/target/debug/libmcs_tas_simple.so
                              For flexguard_simple library path:
                                1) use $FLEXGUARD_SIMPLE_LIB if set
-                               2) else <repo>/target/release/libflexguard.so
-                               3) else <repo>/target/debug/libflexguard.so
+                               2) else <repo>/target/<profile>/libflexguard.so
+                               3) else <repo>/target/release/libflexguard.so
+                               4) else <repo>/target/debug/libflexguard.so
   --sweep-script PATH        Sweep script to run (default: <mutexbench>/scripts/sweep_mutex_throughput.sh)
   --output-root DIR          Output root directory (default: <mutexbench>/results)
+  --profile                  Enable perf profiling and preserve perf.data beside raw.csv
   --sudo-mode MODE           MODE in {all,auto,none} (default: all)
                              all: sudo for every lock run
                              auto: sudo only for flexguard*/hybridlock*/mcs_tas_simple* locks
@@ -634,6 +637,7 @@ start_scx_lavd() {
 locks_csv=""
 sweep_script="$SCRIPT_DIR/sweep_mutex_throughput.sh"
 output_root="$MUTEXBENCH_DIR/results"
+profiling_enabled="0"
 sudo_mode="all"
 timeslice_extension="off"
 with_scx_lavd="0"
@@ -656,6 +660,14 @@ while [[ $# -gt 0 ]]; do
     --output-root)
       output_root="${2:-}"
       shift 2
+      ;;
+    --profile)
+      if [[ $# -gt 1 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+        echo "--profile does not take a value; use bare --profile" >&2
+        exit 1
+      fi
+      profiling_enabled="1"
+      shift
       ;;
     --sudo-mode)
       sudo_mode="${2:-}"
@@ -735,6 +747,9 @@ fi
 acquire_queue_lock "$queue_lock_file"
 
 sweep_args+=(--timeslice-extension "$timeslice_extension")
+if [[ "$profiling_enabled" == "1" ]]; then
+  sweep_args+=(--profile)
+fi
 
 sweep_script="$(resolve_executable_path "$sweep_script" "$MUTEXBENCH_DIR")"
 if [[ ! -x "$sweep_script" ]]; then
@@ -886,7 +901,7 @@ for item in "${lock_items[@]}"; do
     mcs_tas_simple_lib="$(resolve_mcs_tas_simple_lib_path)"
     if [[ ! -f "$mcs_tas_simple_lib" ]]; then
       echo "mcs_tas_simple library not found: $mcs_tas_simple_lib" >&2
-      echo "Build first (cargo build -p mcs_tas_simple --release) or set LB_SIMPLE_LIB to libmcs_tas_simple.so path." >&2
+      echo "Build first (cargo build -p mcs_tas_simple --release) or set MCS_TAS_SIMPLE_LIB to libmcs_tas_simple.so path." >&2
       exit 1
     fi
   elif [[ "$lock_kind" == "flexguard_simple" ]]; then

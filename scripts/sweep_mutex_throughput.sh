@@ -28,6 +28,7 @@ Options:
   --lock-kind K                lock kind: mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh (default: mutex)
   --timeslice-extension M      off|auto|require (default: off)
   --repeats N                  runs per parameter point (default: 3)
+  --profile                    Record perf.data for each run and keep it beside raw.csv
   --output-raw PATH            raw per-run CSV (default: <mutexbench>/throughput_sweep_raw.csv)
   --output-summary PATH        aggregated CSV (default: <mutexbench>/throughput_sweep_summary.csv)
   -h, --help                   Show this help
@@ -56,6 +57,7 @@ timing_sample_stride="8"
 lock_kind="mutex"
 timeslice_extension="off"
 repeats="3"
+profiling_enabled="0"
 output_raw="$MUTEXBENCH_DIR/throughput_sweep_raw.csv"
 output_summary="$MUTEXBENCH_DIR/throughput_sweep_summary.csv"
 
@@ -108,6 +110,14 @@ while [[ $# -gt 0 ]]; do
     --repeats)
       repeats="${2:-}"
       shift 2
+      ;;
+    --profile)
+      if [[ $# -gt 1 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+        echo "--profile does not take a value; use bare --profile" >&2
+        exit 1
+      fi
+      profiling_enabled="1"
+      shift
       ;;
     --output-raw)
       output_raw="${2:-}"
@@ -214,7 +224,9 @@ restore_output_owner_if_sudo_user() {
     return 0
   fi
 
-  for path in "$output_raw" "$output_summary"; do
+  for path in "$@"; do
+    [[ -z "$path" ]] && continue
+
     if [[ -e "$path" ]]; then
       if ! chown "$sudo_uid:$sudo_gid" "$path"; then
         echo "Warning: failed to chown file: $path" >&2
@@ -331,13 +343,24 @@ if ! command -v pidstat >/dev/null 2>&1; then
   echo "pidstat not found in PATH" >&2
   exit 1
 fi
+if [[ "$profiling_enabled" == "1" ]] && ! command -v perf >/dev/null 2>&1; then
+  echo "perf not found in PATH" >&2
+  exit 1
+fi
 
-mkdir -p "$(dirname "$output_raw")"
+raw_output_dir="$(dirname "$output_raw")"
+mkdir -p "$raw_output_dir"
 mkdir -p "$(dirname "$output_summary")"
 
-printf "%s\n" \
-  "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct" \
-  > "$output_raw"
+if [[ "$profiling_enabled" == "1" ]]; then
+  printf "%s\n" \
+    "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct,perf_data_path" \
+    > "$output_raw"
+else
+  printf "%s\n" \
+    "threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct" \
+    > "$output_raw"
+fi
 
 extract_metric() {
   local text="$1"
@@ -427,8 +450,16 @@ for t in "${threads[@]}"; do
 
         bench_output_path="$(mktemp)"
         pidstat_output_path="$(mktemp)"
+        perf_data_path=""
 
-        if [[ -n "$bench_ld_preload" ]]; then
+        if [[ "$profiling_enabled" == "1" ]]; then
+          perf_data_path="$raw_output_dir/t${t}_c${c}_o${o}_r${r}.perf.data"
+          if [[ -n "$bench_ld_preload" ]]; then
+            perf record -q -F 499 -e cpu-clock -o "$perf_data_path" -- env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}" >"$bench_output_path" &
+          else
+            perf record -q -F 499 -e cpu-clock -o "$perf_data_path" -- "${bench_cmd[@]}" >"$bench_output_path" &
+          fi
+        elif [[ -n "$bench_ld_preload" ]]; then
           env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}" >"$bench_output_path" &
         else
           "${bench_cmd[@]}" >"$bench_output_path" &
@@ -473,17 +504,29 @@ for t in "${threads[@]}"; do
 
         rm -f -- "$bench_output_path" "$pidstat_output_path"
 
+        if [[ "$profiling_enabled" == "1" ]]; then
+          restore_output_owner_if_sudo_user "$perf_data_path"
+        fi
+
         if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" || -z "$avg_lock_hold_ns" || -z "$avg_wait_ns_estimated" || -z "$avg_lock_handoff_ns_estimated" || -z "$lock_hold_samples" || -z "$avg_cpu_pct" ]]; then
           echo "Failed to parse benchmark output for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
           echo "$bench_output" >&2
           exit 1
         fi
 
-        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
-          "$t" "$c" "$o" "$r" \
-          "$throughput" "$elapsed_seconds" "$total_operations" \
-          "$avg_lock_hold_ns" "$avg_wait_ns_estimated" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" "$avg_cpu_pct" \
-          >> "$output_raw"
+        if [[ "$profiling_enabled" == "1" ]]; then
+          printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+            "$t" "$c" "$o" "$r" \
+            "$throughput" "$elapsed_seconds" "$total_operations" \
+            "$avg_lock_hold_ns" "$avg_wait_ns_estimated" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" "$avg_cpu_pct" "$perf_data_path" \
+            >> "$output_raw"
+        else
+          printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+            "$t" "$c" "$o" "$r" \
+            "$throughput" "$elapsed_seconds" "$total_operations" \
+            "$avg_lock_hold_ns" "$avg_wait_ns_estimated" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" "$avg_cpu_pct" \
+            >> "$output_raw"
+        fi
       done
     done
   done
@@ -527,7 +570,7 @@ awk -F',' '
   }
 ' "$output_raw" | sort -t',' -k1,1n -k2,2n -k3,3n > "$output_summary"
 
-restore_output_owner_if_sudo_user
+restore_output_owner_if_sudo_user "$output_raw" "$output_summary"
 
 echo "Raw results: $output_raw" >&2
 echo "Summary results: $output_summary" >&2
