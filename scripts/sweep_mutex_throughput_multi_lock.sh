@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_ROOT="$(cd -- "${MUTEXBENCH_DIR}/../.." && pwd)"
 MCS_TAS_SIMPLE_DEBUG_COUNTERS="${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}"
+TTAS_SIMPLE_DEBUG_COUNTERS="${TTAS_SIMPLE_DEBUG_COUNTERS:-}"
 if [[ -n "${FLEXGUARD_DIR:-}" ]]; then
   FLEXGUARD_DIR="$(cd -- "$FLEXGUARD_DIR" && pwd)"
 elif [[ -d "${MUTEXBENCH_DIR}/../flexguard" ]]; then
@@ -33,7 +34,9 @@ Options:
                                   resolved as $FLEXGUARD_DIR/build/interpose_<name>.sh
                                7) mcs_tas_simple (run benchmark with LD_PRELOAD=libmcs_tas_simple.so)
                                8) mcs_tas_simple_no_bpf (same as mcs_tas_simple with MCS_TAS_SIMPLE_DISABLE_BPF=1)
-                               9) flexguard_simple (run benchmark with LD_PRELOAD=libflexguard.so)
+                               9) ttas_simple (run benchmark with LD_PRELOAD=libttas_simple.so)
+                              10) ttas_simple_no_bpf (same as ttas_simple with TTAS_SIMPLE_DISABLE_BPF=1)
+                              11) flexguard_simple (run benchmark with LD_PRELOAD=libflexguard.so)
                              Name conflict rule:
                                - Builtin names always run as native locks.
                                - To run external lock with a builtin-like name,
@@ -43,6 +46,11 @@ Options:
                                2) else <repo>/target/<profile>/libmcs_tas_simple.so
                                3) else <repo>/target/release/libmcs_tas_simple.so
                                4) else <repo>/target/debug/libmcs_tas_simple.so
+                             For ttas_simple library path:
+                               1) use $TTAS_SIMPLE_LIB if set
+                               2) else <repo>/target/<profile>/libttas_simple.so
+                               3) else <repo>/target/release/libttas_simple.so
+                               4) else <repo>/target/debug/libttas_simple.so
                              For flexguard_simple library path:
                                1) use $FLEXGUARD_SIMPLE_LIB if set
                                2) else <repo>/target/<profile>/libflexguard.so
@@ -51,9 +59,12 @@ Options:
   --sweep-script PATH        Sweep script to run (default: <mutexbench>/scripts/sweep_mutex_throughput.sh)
   --output-root DIR          Output root directory (default: <mutexbench>/results)
   --profile                  Enable perf profiling and preserve perf.data beside raw.csv
+  --sample-bpf               Record per-run lb_simple BPF sampler CSVs for BPF-backed preload locks
+  --sample-bpf-layout MODE   Sampler layout: auto|v1|v2|legacy|current (default: auto)
+  --sample-bpf-interval-us N Sampler interval in microseconds (default: 500)
   --sudo-mode MODE           MODE in {all,auto,none} (default: all)
                              all: sudo for every lock run
-                             auto: sudo only for flexguard*/hybridlock*/mcs_tas_simple* locks
+                             auto: sudo only for flexguard*/hybridlock*/mcs_tas_simple*/ttas_simple* locks
                              none: never sudo
   --timeslice-extension M    off|auto|require (default: off)
   --with-scx-lavd            Run scx_lavd in background for the whole sweep:
@@ -62,10 +73,10 @@ Options:
   --scx-lavd-bin PATH        scx_lavd binary path (default: /mnt/home/jz/scx/target/release/scx_lavd)
   --lb-simple-sched-ext-conflict MODE
                              MODE in {stop,error,ignore} (default: stop)
-                             How to handle active sched_ext before mcs_tas_simple:
+                             How to handle active sched_ext before lb_simple preload locks:
                                stop: terminate current sched_ext owner process(es)
                                error: fail fast with owner diagnostics
-                               ignore: run anyway (mcs_tas_simple may fail to initialize)
+                               ignore: run anyway (mcs_tas_simple/ttas_simple may fail to initialize)
   --dry-run                  Print commands only, do not execute
   -h, --help                 Show this help
 
@@ -179,6 +190,13 @@ resolve_mcs_tas_simple_lib_path() {
     "MCS_TAS_SIMPLE_LIB" \
     "$PROJECT_ROOT/target/release/libmcs_tas_simple.so" \
     "$PROJECT_ROOT/target/debug/libmcs_tas_simple.so"
+}
+
+resolve_ttas_simple_lib_path() {
+  resolve_preload_lib_path \
+    "TTAS_SIMPLE_LIB" \
+    "$PROJECT_ROOT/target/release/libttas_simple.so" \
+    "$PROJECT_ROOT/target/debug/libttas_simple.so"
 }
 
 resolve_flexguard_simple_lib_path() {
@@ -477,7 +495,7 @@ should_auto_sudo() {
   local lock_script="${2:-}"
 
   case "$lock_name" in
-    flexguard*|hybridlock*|mcs_tas_simple*)
+    flexguard*|hybridlock*|mcs_tas_simple*|ttas_simple*)
       return 0
       ;;
   esac
@@ -638,6 +656,9 @@ locks_csv=""
 sweep_script="$SCRIPT_DIR/sweep_mutex_throughput.sh"
 output_root="$MUTEXBENCH_DIR/results"
 profiling_enabled="0"
+sample_bpf_enabled="0"
+sample_bpf_layout="auto"
+sample_bpf_interval_us="500"
 sudo_mode="all"
 timeslice_extension="off"
 with_scx_lavd="0"
@@ -646,6 +667,10 @@ mcs_tas_simple_sched_ext_conflict="stop"
 dry_run="0"
 queue_lock_file="${MUTEXBENCH_MULTI_LOCK_LOCK_FILE:-/tmp/mutexbench-sweep-multi-lock.lock}"
 declare -a sweep_args=()
+
+ensure_lb_simple_sched_ext_ready() {
+  ensure_mcs_tas_simple_sched_ext_ready "$@"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -668,6 +693,22 @@ while [[ $# -gt 0 ]]; do
       fi
       profiling_enabled="1"
       shift
+      ;;
+    --sample-bpf)
+      if [[ $# -gt 1 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+        echo "--sample-bpf does not take a value; use bare --sample-bpf" >&2
+        exit 1
+      fi
+      sample_bpf_enabled="1"
+      shift
+      ;;
+    --sample-bpf-layout)
+      sample_bpf_layout="${2:-}"
+      shift 2
+      ;;
+    --sample-bpf-interval-us)
+      sample_bpf_interval_us="${2:-}"
+      shift 2
       ;;
     --sudo-mode)
       sudo_mode="${2:-}"
@@ -805,8 +846,10 @@ for item in "${lock_items[@]}"; do
   lock_kind="hook"
   bench_lock_kind=""
   mcs_tas_simple_lib=""
+  ttas_simple_lib=""
   flexguard_simple_lib=""
   mcs_tas_simple_disable_bpf="0"
+  ttas_simple_disable_bpf="0"
   if [[ "$item" == *=* ]]; then
     lock_name="${item%%=*}"
     lock_script="${item#*=}"
@@ -841,6 +884,17 @@ for item in "${lock_items[@]}"; do
         lock_name="mcs_tas_simple_no_bpf"
         lock_script=""
         mcs_tas_simple_disable_bpf="1"
+        ;;
+      ttas_simple)
+        lock_kind="ttas_simple"
+        lock_name="ttas_simple"
+        lock_script=""
+        ;;
+      ttas_simple_no_bpf)
+        lock_kind="ttas_simple"
+        lock_name="ttas_simple_no_bpf"
+        lock_script=""
+        ttas_simple_disable_bpf="1"
         ;;
       flexguard_simple)
         lock_kind="flexguard_simple"
@@ -904,6 +958,17 @@ for item in "${lock_items[@]}"; do
       echo "Build first (cargo build -p mcs_tas_simple --release) or set MCS_TAS_SIMPLE_LIB to libmcs_tas_simple.so path." >&2
       exit 1
     fi
+  elif [[ "$lock_kind" == "ttas_simple" ]]; then
+    if [[ "$with_scx_lavd" == "1" ]]; then
+      echo "lock=${lock_name} cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
+      exit 1
+    fi
+    ttas_simple_lib="$(resolve_ttas_simple_lib_path)"
+    if [[ ! -f "$ttas_simple_lib" ]]; then
+      echo "ttas_simple library not found: $ttas_simple_lib" >&2
+      echo "Build first (cargo build -p ttas_simple --release) or set TTAS_SIMPLE_LIB to libttas_simple.so path." >&2
+      exit 1
+    fi
   elif [[ "$lock_kind" == "flexguard_simple" ]]; then
     if [[ "$with_scx_lavd" == "1" ]]; then
       echo "lock=${lock_name} cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
@@ -922,6 +987,37 @@ for item in "${lock_items[@]}"; do
   summary_out="${lock_dir}/summary.csv"
   mkdir -p "$lock_dir"
 
+  sample_bpf_args=()
+  if [[ "$sample_bpf_enabled" == "1" ]]; then
+    case "$lock_kind" in
+      mcs_tas_simple)
+        if [[ "$mcs_tas_simple_disable_bpf" != "1" ]]; then
+          sample_bpf_args=(
+            --sample-bpf
+            --sample-bpf-layout "$sample_bpf_layout"
+            --sample-bpf-interval-us "$sample_bpf_interval_us"
+          )
+        fi
+        ;;
+      ttas_simple)
+        if [[ "$ttas_simple_disable_bpf" != "1" ]]; then
+          sample_bpf_args=(
+            --sample-bpf
+            --sample-bpf-layout "$sample_bpf_layout"
+            --sample-bpf-interval-us "$sample_bpf_interval_us"
+          )
+        fi
+        ;;
+      flexguard_simple)
+        sample_bpf_args=(
+          --sample-bpf
+          --sample-bpf-layout "$sample_bpf_layout"
+          --sample-bpf-interval-us "$sample_bpf_interval_us"
+        )
+        ;;
+    esac
+  fi
+
   if [[ "$lock_kind" == "native" ]]; then
     cmd=(
       "$sweep_script"
@@ -934,6 +1030,7 @@ for item in "${lock_items[@]}"; do
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
+      "${sample_bpf_args[@]}"
       --bench-ld-preload "$mcs_tas_simple_lib"
       --lock-kind "mutex"
       --output-raw "$raw_out"
@@ -944,10 +1041,26 @@ for item in "${lock_items[@]}"; do
     else
       cmd=(env "MCS_TAS_SIMPLE_DEBUG_COUNTERS=${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
+  elif [[ "$lock_kind" == "ttas_simple" ]]; then
+    cmd=(
+      "$sweep_script"
+      "${sweep_args[@]}"
+      "${sample_bpf_args[@]}"
+      --bench-ld-preload "$ttas_simple_lib"
+      --lock-kind "mutex"
+      --output-raw "$raw_out"
+      --output-summary "$summary_out"
+    )
+    if [[ "$ttas_simple_disable_bpf" == "1" ]]; then
+      cmd=(env "TTAS_SIMPLE_DEBUG_COUNTERS=${TTAS_SIMPLE_DEBUG_COUNTERS:-}" "TTAS_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
+    else
+      cmd=(env "TTAS_SIMPLE_DEBUG_COUNTERS=${TTAS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
+    fi
   elif [[ "$lock_kind" == "flexguard_simple" ]]; then
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
+      "${sample_bpf_args[@]}"
       --bench-ld-preload "$flexguard_simple_lib"
       --lock-kind "mutex"
       --output-raw "$raw_out"
@@ -958,6 +1071,7 @@ for item in "${lock_items[@]}"; do
       "$lock_script"
       "$sweep_script"
       "${sweep_args[@]}"
+      "${sample_bpf_args[@]}"
       --lock-kind "mutex"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
@@ -985,9 +1099,11 @@ for item in "${lock_items[@]}"; do
   fi
 
   if [[ "$lock_kind" == "mcs_tas_simple" && "$dry_run" != "1" ]]; then
-    ensure_mcs_tas_simple_sched_ext_ready "$should_sudo" "$mcs_tas_simple_sched_ext_conflict"
+    ensure_lb_simple_sched_ext_ready "$should_sudo" "$mcs_tas_simple_sched_ext_conflict"
+  elif [[ "$lock_kind" == "ttas_simple" && "$dry_run" != "1" ]]; then
+    ensure_lb_simple_sched_ext_ready "$should_sudo" "$mcs_tas_simple_sched_ext_conflict"
   elif [[ "$lock_kind" == "flexguard_simple" && "$dry_run" != "1" ]]; then
-    ensure_mcs_tas_simple_sched_ext_ready "$should_sudo" "$mcs_tas_simple_sched_ext_conflict"
+    ensure_lb_simple_sched_ext_ready "$should_sudo" "$mcs_tas_simple_sched_ext_conflict"
   fi
 
   if [[ "$lock_kind" == "native" ]]; then
