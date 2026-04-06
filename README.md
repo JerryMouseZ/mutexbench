@@ -8,7 +8,7 @@
 - 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`mcs-tas-tse`、`mcstas-next`、`mcstas-next-tse`、`twa`、`clh`
 - 指标输出：吞吐量、锁内持有时间、平均等待时间近似、解锁到下一次加锁时间估计
 - 扫频脚本：自动生成 `raw.csv`（逐次运行）与 `summary.csv`（聚合统计）
-- 多锁对比：支持内置锁、外部 interpose 脚本、`mcs_tas_simple` 预加载模式
+- 多锁对比：支持内置锁、外部 interpose 脚本、`mcs_tas_simple` / `ttas_simple` 预加载模式
 - Python 工具：多锁统计分析、线程推荐、吞吐量曲线图批量生成
 
 ## 目录结构
@@ -36,7 +36,8 @@
 - `make`
 - Python 3（绘图脚本需要 `matplotlib`）
 - `pidstat`（`scripts/sweep_mutex_throughput.sh` 需要，用于记录 steady CPU）
-- 可选：`sudo`、`bpftool`（使用 `mcs_tas_simple`/部分锁脚本时可能需要）
+- 可选：`sudo`、`bpftool`（使用 `mcs_tas_simple`、`ttas_simple` 或部分锁脚本时可能需要）
+- 可选：`python3`（启用 `--sample-bpf` 时需要，用于记录 lb_simple 控制面 sampler CSV）
 
 ## 构建
 
@@ -122,6 +123,8 @@ scripts/sweep_mutex_throughput.sh \
 
 说明：该脚本会对每次运行启动 `pidstat -u -h -p <pid> 1` 采样 CPU，因此基准时长需要足够长，至少让 `pidstat` 产出一条 `%CPU` 样本。
 
+若启用 `--sample-bpf`，脚本还会为每次运行启动 `scripts/sample_lb_simple_bpf.py`，并在 `raw.csv` 同目录输出 `t*_c*_o*_r*.bpf_samples.csv`。该功能要求当前 sweep 以 root 身份运行（例如通过 `sudo` 调用脚本），并且仅适用于 `mcs_tas_simple`、`ttas_simple`、`flexguard_simple` 这类 lb_simple sched_ext 预加载锁。
+
 ### 3) 多锁批量扫频
 
 ```bash
@@ -137,14 +140,34 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
   --output-root results-new
 ```
 
+如需同时记录 lb_simple 控制面 sampler：
+
+```bash
+scripts/sweep_mutex_throughput_multi_lock.sh \
+  --locks ttas_simple \
+  --sudo-mode auto \
+  --sample-bpf \
+  --sample-bpf-layout auto \
+  --sample-bpf-interval-us 500 \
+  --threads 64 \
+  --critical-ns 350 \
+  --outside-ns 350 \
+  --duration-ms 3000 \
+  --warmup-duration-ms 50 \
+  --repeats 1 \
+  --output-root results-sampled
+```
+
 `--locks` 支持：
 
 - 内置锁名（如 `mutex,mcs,clh`）
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
-- `mcs_tas_simple`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`；加 `--profile` 会保留每次运行的 `perf.data`）
+- `mcs_tas_simple`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
 - `mcs_tas_simple_no_bpf`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`，并设置 `MCS_TAS_SIMPLE_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
-- `flexguard_simple`（通过 `LD_PRELOAD=target/release/libflexguard.so`；加 `--profile` 会保留 `perf.data`）
+- `ttas_simple`（通过 `LD_PRELOAD=target/release/libttas_simple.so`；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
+- `ttas_simple_no_bpf`（通过 `LD_PRELOAD=target/release/libttas_simple.so`，并设置 `TTAS_SIMPLE_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
+- `flexguard_simple`（通过 `LD_PRELOAD=target/release/libflexguard.so`；加 `--profile` 会保留 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
 
 并发说明：
 
@@ -172,8 +195,12 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `avg_lock_handoff_ns_estimated`
 - `lock_hold_samples`
 - `avg_cpu_pct`
+- 可选：`perf_data_path`（启用 `--profile` 时）
+- 可选：`bpf_samples_path`、`bpf_layout`、`bpf_interval_us`（启用 `--sample-bpf` 时）
 
 其中 `avg_cpu_pct` 表示该次运行的 steady `%CPU` 均值：若同一 PID 有多条 `pidstat` 样本，则丢弃首条样本后再取平均；若只有一条样本，则直接使用该样本。
+
+启用 `--sample-bpf` 时，每次运行会在 `raw.csv` 同目录额外生成一个 `t*_c*_o*_r*.bpf_samples.csv`，用于后续分析 lb_simple 控制面趋势。
 
 ### `summary.csv`（聚合结果）
 

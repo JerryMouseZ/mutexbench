@@ -62,7 +62,7 @@ class BpfAttrGetFdById(ctypes.Structure):
     ]
 
 
-class DataGlobals(ctypes.Structure):
+class LegacyDataGlobals(ctypes.Structure):
     _fields_ = [
         ("H_persist", ctypes.c_uint32),
         ("L_persist", ctypes.c_uint32),
@@ -74,7 +74,30 @@ class DataGlobals(ctypes.Structure):
     ]
 
 
-class BssGlobals(ctypes.Structure):
+class UserExitInfo(ctypes.Structure):
+    _fields_ = [
+        ("kind", ctypes.c_int32),
+        ("_pad_4", ctypes.c_uint8 * 4),
+        ("exit_code", ctypes.c_int64),
+        ("reason", ctypes.c_int8 * 128),
+        ("msg", ctypes.c_int8 * 1024),
+    ]
+
+
+class CurrentDataGlobals(ctypes.Structure):
+    _fields_ = [
+        ("H_persist", ctypes.c_uint32),
+        ("L_persist", ctypes.c_uint32),
+        ("ssc_vote_window_ns", ctypes.c_uint64),
+        ("ssc_active_count", ctypes.c_uint32),
+        ("ssc_best_count", ctypes.c_uint32),
+        ("ssc_refine_low", ctypes.c_uint32),
+        ("ssc_refine_high", ctypes.c_uint32),
+        ("uei", UserExitInfo),
+    ]
+
+
+class LegacyBssGlobals(ctypes.Structure):
     _fields_ = [
         ("consec_high", ctypes.c_uint32),
         ("consec_low", ctypes.c_uint32),
@@ -117,6 +140,73 @@ class BssGlobals(ctypes.Structure):
         ("dbg_grow_uses_capped_step", ctypes.c_uint64),
         ("dbg_last_grow_target", ctypes.c_uint64),
     ]
+
+
+class CurrentBssGlobals(ctypes.Structure):
+    _fields_ = [
+        ("consec_high", ctypes.c_uint32),
+        ("consec_low", ctypes.c_uint32),
+        ("dominant_node", ctypes.c_int32),
+        ("ssc_cpu_count", ctypes.c_uint32),
+        ("ssc_cpu_list", ctypes.c_uint32 * MAX_CPUS),
+        ("ssc_cpu_rank", ctypes.c_uint16 * MAX_CPUS),
+        ("forced_release_cnt", ctypes.c_uint64),
+        ("stats_only_mode", ctypes.c_uint32),
+        ("_pad_1564", ctypes.c_uint8 * 4),
+        ("ssc_vote_epoch", ctypes.c_uint64),
+        ("ssc_vote_start_ns", ctypes.c_uint64),
+        ("ssc_vote_decided_epoch", ctypes.c_uint64),
+        ("ssc_vote_sum_run", ctypes.c_uint64),
+        ("ssc_vote_sum_wait", ctypes.c_uint64),
+        ("ssc_vote_sum_unlock_count", ctypes.c_uint64),
+        ("ssc_vote_publish_count", ctypes.c_uint32),
+        ("_pad_1620", ctypes.c_uint8 * 4),
+        ("ssc_vote_last_score", ctypes.c_uint64),
+        ("ssc_vote_last_effective_score", ctypes.c_uint64),
+        ("ssc_bootstrap_mature_windows", ctypes.c_uint32),
+        ("ssc_pending_capped_grow", ctypes.c_uint32),
+        ("ssc_vote_consec_grow", ctypes.c_uint32),
+        ("ssc_vote_consec_shrink", ctypes.c_uint32),
+        ("ssc_search_phase", ctypes.c_uint32),
+        ("_pad_1660", ctypes.c_uint8 * 4),
+        ("ssc_best_score", ctypes.c_uint64),
+        ("ssc_best_candidate_count", ctypes.c_uint32),
+        ("ssc_best_candidate_streak", ctypes.c_uint32),
+        ("dbg_counters_enabled", ctypes.c_uint32),
+        ("_pad_1684", ctypes.c_uint8 * 4),
+        ("dbg_win_run", ctypes.c_uint64),
+        ("dbg_win_wait", ctypes.c_uint64),
+        ("dbg_acct_calls", ctypes.c_uint64),
+        ("dbg_acct_read_ok", ctypes.c_uint64),
+        ("dbg_refine_entries", ctypes.c_uint64),
+        ("dbg_refine_single_point", ctypes.c_uint64),
+        ("dbg_refine_noop_targets", ctypes.c_uint64),
+        ("dbg_noop_resizes", ctypes.c_uint64),
+        ("dbg_active_count_changes", ctypes.c_uint64),
+        ("dbg_bad_steady_rebases", ctypes.c_uint64),
+        ("dbg_task_ctx_creates", ctypes.c_uint64),
+        ("dbg_task_ctx_misses", ctypes.c_uint64),
+        ("dbg_grow_uses_capped_step", ctypes.c_uint64),
+        ("dbg_last_grow_target", ctypes.c_uint64),
+    ]
+
+
+@dataclass(frozen=True)
+class LayoutProfile:
+    name: str
+    data_struct: type[ctypes.Structure]
+    bss_struct: type[ctypes.Structure]
+
+
+LAYOUT_PROFILES = {
+    "v1": LayoutProfile(name="v1", data_struct=LegacyDataGlobals, bss_struct=LegacyBssGlobals),
+    "v2": LayoutProfile(name="v2", data_struct=CurrentDataGlobals, bss_struct=CurrentBssGlobals),
+}
+
+LAYOUT_ALIASES = {
+    "legacy": "v1",
+    "current": "v2",
+}
 
 
 class AggPercpu(ctypes.Structure):
@@ -179,6 +269,12 @@ def parse_args() -> argparse.Namespace:
         "--ops-name",
         default="lb_simple",
         help="Expected sched_ext ops name (default: lb_simple)",
+    )
+    parser.add_argument(
+        "--layout",
+        default="auto",
+        choices=["auto", "v1", "v2", "legacy", "current"],
+        help="BPF globals layout profile: auto, v1/legacy, or v2/current (default: auto)",
     )
     parser.add_argument(
         "--pid",
@@ -487,7 +583,7 @@ def search_phase_name(phase: int) -> str:
     return f"unknown_{phase}"
 
 
-def active_cpu_list(bss: BssGlobals, data: DataGlobals) -> List[int]:
+def active_cpu_list(bss: ctypes.Structure, data: ctypes.Structure) -> List[int]:
     limit = min(int(data.ssc_active_count), int(bss.ssc_cpu_count), MAX_CPUS)
     return [int(bss.ssc_cpu_list[idx]) for idx in range(limit)]
 
@@ -553,16 +649,31 @@ def read_slot_summary(meta: MapMeta, active_count: int, slot_limit: int) -> Dict
     }
 
 
-def validate_struct_sizes(maps: Dict[str, MapMeta]) -> None:
-    bss_size = ctypes.sizeof(BssGlobals)
-    data_size = ctypes.sizeof(DataGlobals)
+def normalize_layout_name(name: str) -> str:
+    return LAYOUT_ALIASES.get(name, name)
+
+
+def choose_layout_profile(args: argparse.Namespace, maps: Dict[str, MapMeta]) -> LayoutProfile:
+    requested = normalize_layout_name(args.layout)
+    if requested != "auto":
+        return LAYOUT_PROFILES[requested]
+
+    data_size = maps["data"].value_size
+    if data_size >= ctypes.sizeof(CurrentDataGlobals):
+        return LAYOUT_PROFILES["v2"]
+    return LAYOUT_PROFILES["v1"]
+
+
+def validate_struct_sizes(maps: Dict[str, MapMeta], layout: LayoutProfile) -> None:
+    bss_size = ctypes.sizeof(layout.bss_struct)
+    data_size = ctypes.sizeof(layout.data_struct)
     if maps["bss"].value_size < bss_size:
         raise SystemExit(
-            f".bss size too small: map={maps['bss'].value_size} local_struct={bss_size}; update script layout"
+            f".bss size too small for layout {layout.name}: map={maps['bss'].value_size} local_struct={bss_size}"
         )
     if maps["data"].value_size < data_size:
         raise SystemExit(
-            f".data size too small: map={maps['data'].value_size} local_struct={data_size}; update script layout"
+            f".data size too small for layout {layout.name}: map={maps['data'].value_size} local_struct={data_size}"
         )
     if "agg_percpu_map" in maps and maps["agg_percpu_map"].value_size != ctypes.sizeof(AggPercpu):
         raise SystemExit(
@@ -584,6 +695,7 @@ def build_fieldnames(args: argparse.Namespace) -> List[str]:
         "read_ns",
         "ops_name",
         "owner_pid",
+        "layout_profile",
         "dominant_node",
         "ssc_cpu_count",
         "ssc_active_count",
@@ -656,14 +768,21 @@ def build_fieldnames(args: argparse.Namespace) -> List[str]:
 def take_sample(
     maps: Dict[str, MapMeta],
     args: argparse.Namespace,
+    layout: LayoutProfile,
     sample_index: int,
     owner_pid: int,
     start_ns: int,
     scheduled_ns: int,
 ) -> Dict[str, object]:
     sample_start_ns = time.monotonic_ns()
-    data = parse_struct(bpf_map_lookup(maps["data"].fd, u32_key(0), maps["data"].value_size), DataGlobals)
-    bss = parse_struct(bpf_map_lookup(maps["bss"].fd, u32_key(0), maps["bss"].value_size), BssGlobals)
+    data = parse_struct(
+        bpf_map_lookup(maps["data"].fd, u32_key(0), maps["data"].value_size),
+        layout.data_struct,
+    )
+    bss = parse_struct(
+        bpf_map_lookup(maps["bss"].fd, u32_key(0), maps["bss"].value_size),
+        layout.bss_struct,
+    )
     sample_end_ns = time.monotonic_ns()
 
     row: Dict[str, object] = {
@@ -675,6 +794,7 @@ def take_sample(
         "read_ns": sample_end_ns - sample_start_ns,
         "ops_name": args.ops_name,
         "owner_pid": owner_pid,
+        "layout_profile": layout.name,
         "dominant_node": int(bss.dominant_node),
         "ssc_cpu_count": int(bss.ssc_cpu_count),
         "ssc_active_count": int(data.ssc_active_count),
@@ -762,12 +882,13 @@ def main() -> int:
     require_root()
     ensure_sched_ext_ops(args.ops_name)
     owner_pid, maps = choose_pid_and_maps(args)
-    validate_struct_sizes(maps)
+    layout = choose_layout_profile(args, maps)
+    validate_struct_sizes(maps, layout)
 
     log(
         (
             f"[sample_lb_simple_bpf] owner_pid={owner_pid} interval_us={args.interval_us} "
-            f"maps={','.join(sorted(maps))} output={args.output}"
+            f"layout={layout.name} maps={','.join(sorted(maps))} output={args.output}"
         ),
         args.quiet,
     )
@@ -785,7 +906,7 @@ def main() -> int:
         sample_index = 0
 
         while True:
-            row = take_sample(maps, args, sample_index, owner_pid, start_ns, next_deadline_ns)
+            row = take_sample(maps, args, layout, sample_index, owner_pid, start_ns, next_deadline_ns)
             writer.writerow(row)
             out_fh.flush()
 
