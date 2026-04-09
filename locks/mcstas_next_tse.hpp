@@ -21,22 +21,17 @@ struct McsTasNextTseLock {
     bool timeslice_requested{false};
   };
 
-  explicit McsTasNextTseLock(
-      locks_bench::TimesliceExtensionMode timeslice_mode =
-          locks_bench::TimesliceExtensionMode::kOff)
-      : timeslice_mode_(timeslice_mode) {}
+  McsTasNextTseLock() = default;
 
   void prepare_thread() const {
-    if (timeslice_mode_ == locks_bench::TimesliceExtensionMode::kOff) {
-      return;
-    }
-    ThreadTimesliceExtension(timeslice_mode_).prepare_thread();
+    ThreadSliceExtension().prepare_thread();
   }
 
   [[nodiscard]] inline LockState lock() {
     // Fast path: single TAS probe.
     if (!locked_.exchange(true, std::memory_order_acquire)) {
-      return {};
+      ThreadSliceExtension().on_critical_section_enter();
+      return {.timeslice_requested = true};
     }
 
     // Slow path: MCS queue to serialize contenders.
@@ -108,10 +103,7 @@ private:
   }
 
   [[nodiscard]] inline bool RequestTimesliceExtension() const {
-    if (timeslice_mode_ == locks_bench::TimesliceExtensionMode::kOff) {
-      return false;
-    }
-    ThreadTimesliceExtension(timeslice_mode_).on_critical_section_enter();
+    ThreadSliceExtension().on_critical_section_enter();
     return true;
   }
 
@@ -119,26 +111,15 @@ private:
     if (!state.timeslice_requested) {
       return;
     }
-    ThreadTimesliceExtension(timeslice_mode_).on_critical_section_exit();
+    ThreadSliceExtension().on_critical_section_exit();
     state.timeslice_requested = false;
   }
 
   [[nodiscard]] static inline locks_bench::CriticalSectionTimesliceExtension &
-  ThreadTimesliceExtension(locks_bench::TimesliceExtensionMode mode) {
-    struct ThreadTimesliceState {
-      bool configured{false};
-      locks_bench::TimesliceExtensionMode mode{
-          locks_bench::TimesliceExtensionMode::kOff};
-      locks_bench::CriticalSectionTimesliceExtension extension{};
-    };
-
-    static thread_local ThreadTimesliceState state{};
-    if (!state.configured || state.mode != mode) {
-      state.mode = mode;
-      state.extension = locks_bench::CriticalSectionTimesliceExtension(mode);
-      state.configured = true;
-    }
-    return state.extension;
+  ThreadSliceExtension() {
+    static thread_local locks_bench::CriticalSectionTimesliceExtension extension{
+        locks_bench::TimesliceExtensionMode::kRequire};
+    return extension;
   }
 
   inline void SignalSuccessorIfPresent(Node &node) {
@@ -163,5 +144,4 @@ private:
 
   alignas(64) std::atomic<Node *> tail_{nullptr};
   alignas(64) std::atomic<bool> locked_{false};
-  locks_bench::TimesliceExtensionMode timeslice_mode_;
 };
