@@ -26,7 +26,7 @@ Options:
   --warmup-duration-ms N       warmup duration in ms (default: 0)
   --timing-sample-stride N     timing sample stride (default: 8)
   --lock-kind K                lock kind: mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh (default: mutex)
-  --timeslice-extension M      off|auto|require (default: off)
+  --timeslice-extension M      off|auto|require (default: off; ignored for *-tse lock kinds)
   --repeats N                  runs per parameter point (default: 3)
   --profile                    Record perf.data for each run and keep it beside raw.csv
   --sample-bpf                 Record per-run lb_simple BPF sampler CSV beside raw.csv
@@ -328,6 +328,13 @@ case "$timeslice_extension" in
     exit 1
     ;;
 esac
+
+lock_uses_builtin_timeslice_extension="0"
+case "$lock_kind" in
+  mcs-tas-tse|mcstas-next-tse)
+    lock_uses_builtin_timeslice_extension="1"
+    ;;
+esac
 if ! is_uint "$repeats" || [[ "$repeats" -eq 0 ]]; then
   echo "--repeats must be an integer > 0" >&2
   exit 1
@@ -480,8 +487,10 @@ for t in "${threads[@]}"; do
           --critical-ns "$c"
           --outside-ns "$o"
           --timing-sample-stride "$timing_sample_stride"
-          --timeslice-extension "$timeslice_extension"
         )
+        if [[ "$lock_uses_builtin_timeslice_extension" != "1" ]]; then
+          bench_cmd+=( --timeslice-extension "$timeslice_extension" )
+        fi
         if [[ -n "$calibration_config" ]]; then
           bench_cmd+=( --calibration-config "$calibration_config" )
         fi
