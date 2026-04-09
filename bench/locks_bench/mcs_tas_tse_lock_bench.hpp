@@ -9,8 +9,7 @@ namespace locks_bench {
 struct McsTasTseLockBench {
   using GuardState = McsTasTseLock::LockState;
 
-  explicit McsTasTseLockBench(const LockBenchOptions &options = {})
-      : lock_(options.timeslice_extension_mode) {}
+  explicit McsTasTseLockBench(const LockBenchOptions & = {}) {}
 
   void prepare_thread() { lock_.prepare_thread(); }
 
@@ -19,7 +18,7 @@ struct McsTasTseLockBench {
   void unlock(GuardState &state) { lock_.unlock(state); }
 
 private:
-  McsTasTseLock lock_;
+  McsTasTseLock lock_{};
 };
 
 } // namespace locks_bench
