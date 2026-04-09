@@ -247,7 +247,6 @@ public:
       return;
     }
 
-    detail::CompilerBarrier();
     state.rseq->slice_ctrl.request = 1;
     detail::CompilerBarrier();
   }

@@ -1,6 +1,6 @@
 CXX ?= g++
 CPPFLAGS ?=
-CXXFLAGS ?= -O2 -std=c++20 -pthread
+CXXFLAGS ?= -O3 -std=c++20 -pthread
 LDFLAGS ?=
 
 TARGETS := mutex_bench curve_bench
