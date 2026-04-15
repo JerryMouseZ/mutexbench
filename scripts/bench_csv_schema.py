@@ -21,9 +21,14 @@ RAW_FIELDNAMES = [
     "elapsed_seconds",
     "total_operations",
     "avg_lock_hold_ns",
+    "avg_pre_front_wait_ns",
+    "avg_front_wait_ns",
+    "reacquire_acquisitions",
+    "reacquire_rate",
     WAIT_FIELD,
     HANDOFF_FIELD,
     "lock_hold_samples",
+    "phase_wait_samples",
     CPU_FIELD,
 ]
 
@@ -36,9 +41,14 @@ SUMMARY_FIELDNAMES = [
     "elapsed_seconds",
     "total_operations",
     "avg_lock_hold_ns",
+    "avg_pre_front_wait_ns",
+    "avg_front_wait_ns",
+    "reacquire_acquisitions",
+    "reacquire_rate",
     WAIT_FIELD,
     HANDOFF_FIELD,
     "lock_hold_samples",
+    "phase_wait_samples",
     CPU_FIELD,
 ]
 
@@ -65,7 +75,12 @@ RAW_REQUIRED_FOR_CANONICAL = {
     "elapsed_seconds",
     "total_operations",
     "avg_lock_hold_ns",
+    "avg_pre_front_wait_ns",
+    "avg_front_wait_ns",
+    "reacquire_acquisitions",
+    "reacquire_rate",
     "lock_hold_samples",
+    "phase_wait_samples",
 }
 
 DEFAULT_PLOT_REQUIRED_FIELDS = {
@@ -77,6 +92,8 @@ DEFAULT_PLOT_REQUIRED_FIELDS = {
 
 LATENCY_PLOT_REQUIRED_FIELDS = DEFAULT_PLOT_REQUIRED_FIELDS | {
     "avg_lock_hold_ns",
+    "avg_pre_front_wait_ns",
+    "avg_front_wait_ns",
     WAIT_FIELD,
     HANDOFF_FIELD,
 }
@@ -168,9 +185,14 @@ def normalize_raw_rows(
             "elapsed_seconds": row["elapsed_seconds"].strip(),
             "total_operations": row["total_operations"].strip(),
             "avg_lock_hold_ns": row["avg_lock_hold_ns"].strip(),
+            "avg_pre_front_wait_ns": row["avg_pre_front_wait_ns"].strip(),
+            "avg_front_wait_ns": row["avg_front_wait_ns"].strip(),
+            "reacquire_acquisitions": row["reacquire_acquisitions"].strip(),
+            "reacquire_rate": row["reacquire_rate"].strip(),
             WAIT_FIELD: _normalize_wait_value(row, wait_key),
             HANDOFF_FIELD: row[handoff_key].strip(),
             "lock_hold_samples": row["lock_hold_samples"].strip(),
+            "phase_wait_samples": row["phase_wait_samples"].strip(),
             CPU_FIELD: row[cpu_key].strip() if cpu_key is not None else "",
         }
         required_values = RAW_REQUIRED_FOR_CANONICAL | {WAIT_FIELD, HANDOFF_FIELD}
@@ -189,9 +211,14 @@ def aggregate_summary_rows(raw_rows: list[dict[str, str]]) -> list[dict[str, str
             "sum_elapsed": 0.0,
             "sum_total_ops": 0.0,
             "sum_lock_hold": 0.0,
+            "sum_pre_front_wait": 0.0,
+            "sum_front_wait": 0.0,
+            "sum_reacquire_acquisitions": 0.0,
+            "sum_reacquire_rate": 0.0,
             "sum_wait": 0.0,
             "sum_handoff": 0.0,
             "sum_lock_hold_samples": 0.0,
+            "sum_phase_wait_samples": 0.0,
             "sum_cpu": 0.0,
             "count_cpu": 0.0,
         }
@@ -209,9 +236,14 @@ def aggregate_summary_rows(raw_rows: list[dict[str, str]]) -> list[dict[str, str
         agg["sum_elapsed"] += float(row["elapsed_seconds"])
         agg["sum_total_ops"] += float(row["total_operations"])
         agg["sum_lock_hold"] += float(row["avg_lock_hold_ns"])
+        agg["sum_pre_front_wait"] += float(row["avg_pre_front_wait_ns"])
+        agg["sum_front_wait"] += float(row["avg_front_wait_ns"])
+        agg["sum_reacquire_acquisitions"] += float(row["reacquire_acquisitions"])
+        agg["sum_reacquire_rate"] += float(row["reacquire_rate"])
         agg["sum_wait"] += float(row[WAIT_FIELD])
         agg["sum_handoff"] += float(row[HANDOFF_FIELD])
         agg["sum_lock_hold_samples"] += float(row["lock_hold_samples"])
+        agg["sum_phase_wait_samples"] += float(row["phase_wait_samples"])
         cpu_value = row.get(CPU_FIELD, "").strip()
         if cpu_value:
             agg["sum_cpu"] += float(cpu_value)
@@ -231,9 +263,14 @@ def aggregate_summary_rows(raw_rows: list[dict[str, str]]) -> list[dict[str, str
                 "elapsed_seconds": _format_float(agg["sum_elapsed"] / count),
                 "total_operations": _format_float(agg["sum_total_ops"] / count),
                 "avg_lock_hold_ns": _format_float(agg["sum_lock_hold"] / count),
+                "avg_pre_front_wait_ns": _format_float(agg["sum_pre_front_wait"] / count),
+                "avg_front_wait_ns": _format_float(agg["sum_front_wait"] / count),
+                "reacquire_acquisitions": _format_float(agg["sum_reacquire_acquisitions"] / count),
+                "reacquire_rate": _format_float(agg["sum_reacquire_rate"] / count),
                 WAIT_FIELD: _format_float(agg["sum_wait"] / count),
                 HANDOFF_FIELD: _format_float(agg["sum_handoff"] / count),
                 "lock_hold_samples": _format_float(agg["sum_lock_hold_samples"] / count),
+                "phase_wait_samples": _format_float(agg["sum_phase_wait_samples"] / count),
                 CPU_FIELD: (
                     _format_float(agg["sum_cpu"] / agg["count_cpu"]) if agg["count_cpu"] else ""
                 ),
@@ -271,9 +308,14 @@ def normalize_summary_rows(
             "elapsed_seconds": row.get("elapsed_seconds", "").strip(),
             "total_operations": row.get("total_operations", "").strip(),
             "avg_lock_hold_ns": row.get("avg_lock_hold_ns", "").strip(),
+            "avg_pre_front_wait_ns": row.get("avg_pre_front_wait_ns", "").strip(),
+            "avg_front_wait_ns": row.get("avg_front_wait_ns", "").strip(),
+            "reacquire_acquisitions": row.get("reacquire_acquisitions", "").strip(),
+            "reacquire_rate": row.get("reacquire_rate", "").strip(),
             WAIT_FIELD: _normalize_wait_value(row, wait_key),
             HANDOFF_FIELD: row[handoff_key].strip() if handoff_key is not None else "",
             "lock_hold_samples": row.get("lock_hold_samples", "").strip(),
+            "phase_wait_samples": row.get("phase_wait_samples", "").strip(),
             CPU_FIELD: row[cpu_key].strip() if cpu_key is not None else "",
         }
 

@@ -14,6 +14,8 @@ struct McsTasLockBench {
 
   void prepare_thread() { timeslice_.prepare_thread(); }
 
+  void set_sampling(bool enabled) { lock_.set_sampling(enabled); }
+
   [[nodiscard]] GuardState lock() {
     GuardState state = lock_.lock();
     timeslice_.on_critical_section_enter();

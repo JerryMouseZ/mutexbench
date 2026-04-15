@@ -408,7 +408,7 @@ raw_output_dir="$(dirname "$output_raw")"
 mkdir -p "$raw_output_dir"
 mkdir -p "$(dirname "$output_summary")"
 
-raw_header="threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct"
+raw_header="threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_pre_front_wait_ns,avg_front_wait_ns,reacquire_acquisitions,reacquire_rate,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,phase_wait_samples,avg_cpu_pct"
 if [[ "$profiling_enabled" == "1" ]]; then
   raw_header+=",perf_data_path"
 fi
@@ -500,9 +500,14 @@ for t in "${threads[@]}"; do
         elapsed_seconds=""
         total_operations=""
         avg_lock_hold_ns=""
+        avg_pre_front_wait_ns=""
+        avg_front_wait_ns=""
+        reacquire_acquisitions=""
+        reacquire_rate=""
         avg_wait_ns_estimated=""
         avg_lock_handoff_ns_estimated=""
         lock_hold_samples=""
+        phase_wait_samples=""
         avg_cpu_pct=""
 
         bench_output_path="$(mktemp)"
@@ -593,9 +598,14 @@ for t in "${threads[@]}"; do
         elapsed_seconds="$(extract_metric "$bench_output" "elapsed_seconds")"
         total_operations="$(extract_metric "$bench_output" "total_operations")"
         avg_lock_hold_ns="$(extract_metric "$bench_output" "avg_lock_hold_ns")"
+        avg_pre_front_wait_ns="$(extract_metric "$bench_output" "avg_pre_front_wait_ns")"
+        avg_front_wait_ns="$(extract_metric "$bench_output" "avg_front_wait_ns")"
+        reacquire_acquisitions="$(extract_metric "$bench_output" "reacquire_acquisitions")"
+        reacquire_rate="$(extract_metric "$bench_output" "reacquire_rate")"
         avg_wait_ns_estimated="$(extract_metric "$bench_output" "avg_wait_ns_estimated")"
         avg_lock_handoff_ns_estimated="$(extract_metric "$bench_output" "avg_lock_handoff_ns_estimated")"
         lock_hold_samples="$(extract_metric "$bench_output" "lock_hold_samples")"
+        phase_wait_samples="$(extract_metric "$bench_output" "phase_wait_samples")"
 
         if ! avg_cpu_pct="$(extract_avg_cpu_pct "$pidstat_output_path")"; then
           echo "Failed to parse steady CPU samples for threads=${t} critical=${c} outside=${o} repeat=${r}; ensure pidstat emitted at least one sample" >&2
@@ -620,7 +630,7 @@ for t in "${threads[@]}"; do
           fi
         fi
 
-        if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" || -z "$avg_lock_hold_ns" || -z "$avg_wait_ns_estimated" || -z "$avg_lock_handoff_ns_estimated" || -z "$lock_hold_samples" || -z "$avg_cpu_pct" ]]; then
+        if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" || -z "$avg_lock_hold_ns" || -z "$avg_pre_front_wait_ns" || -z "$avg_front_wait_ns" || -z "$reacquire_acquisitions" || -z "$reacquire_rate" || -z "$avg_wait_ns_estimated" || -z "$avg_lock_handoff_ns_estimated" || -z "$lock_hold_samples" || -z "$phase_wait_samples" || -z "$avg_cpu_pct" ]]; then
           echo "Failed to parse benchmark output for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
           echo "$bench_output" >&2
           exit 1
@@ -629,7 +639,7 @@ for t in "${threads[@]}"; do
         raw_row=(
           "$t" "$c" "$o" "$r"
           "$throughput" "$elapsed_seconds" "$total_operations"
-          "$avg_lock_hold_ns" "$avg_wait_ns_estimated" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" "$avg_cpu_pct"
+          "$avg_lock_hold_ns" "$avg_pre_front_wait_ns" "$avg_front_wait_ns" "$reacquire_acquisitions" "$reacquire_rate" "$avg_wait_ns_estimated" "$avg_lock_handoff_ns_estimated" "$lock_hold_samples" "$phase_wait_samples" "$avg_cpu_pct"
         )
         if [[ "$profiling_enabled" == "1" ]]; then
           raw_row+=("$perf_data_path")
@@ -657,29 +667,41 @@ awk -F',' '
     if ($6 != "")  { sum_elapsed[key] += ($6 + 0.0); cnt_elapsed[key]++ }
     if ($7 != "")  { sum_total_ops[key] += ($7 + 0.0); cnt_total_ops[key]++ }
     if ($8 != "")  { sum_lock_hold_ns[key] += ($8 + 0.0); cnt_lock_hold_ns[key]++ }
-    if ($9 != "")  { sum_wait_ns[key] += ($9 + 0.0); cnt_wait_ns[key]++ }
-    if ($10 != "") { sum_handoff_ns[key] += ($10 + 0.0); cnt_handoff_ns[key]++ }
-    if ($11 != "") { sum_lock_hold_samples[key] += ($11 + 0.0); cnt_lock_hold_samples[key]++ }
-    if ($12 != "") { sum_cpu_pct[key] += ($12 + 0.0); cnt_cpu_pct[key]++ }
+    if ($9 != "")  { sum_pre_front_wait_ns[key] += ($9 + 0.0); cnt_pre_front_wait_ns[key]++ }
+    if ($10 != "") { sum_front_wait_ns[key] += ($10 + 0.0); cnt_front_wait_ns[key]++ }
+    if ($11 != "") { sum_reacquire_acquisitions[key] += ($11 + 0.0); cnt_reacquire_acquisitions[key]++ }
+    if ($12 != "") { sum_reacquire_rate[key] += ($12 + 0.0); cnt_reacquire_rate[key]++ }
+    if ($13 != "") { sum_wait_ns[key] += ($13 + 0.0); cnt_wait_ns[key]++ }
+    if ($14 != "") { sum_handoff_ns[key] += ($14 + 0.0); cnt_handoff_ns[key]++ }
+    if ($15 != "") { sum_lock_hold_samples[key] += ($15 + 0.0); cnt_lock_hold_samples[key]++ }
+    if ($16 != "") { sum_phase_wait_samples[key] += ($16 + 0.0); cnt_phase_wait_samples[key]++ }
+    if ($17 != "") { sum_cpu_pct[key] += ($17 + 0.0); cnt_cpu_pct[key]++ }
   }
   END {
-    print "threads,critical_iters,outside_iters,repeats,mean_throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct"
+    print "threads,critical_iters,outside_iters,repeats,mean_throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_pre_front_wait_ns,avg_front_wait_ns,reacquire_acquisitions,reacquire_rate,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,phase_wait_samples,avg_cpu_pct"
     for (k in n) {
       mean = sum[k] / n[k]
 
       mean_elapsed = (cnt_elapsed[k] > 0) ? (sum_elapsed[k] / cnt_elapsed[k]) : 0
       mean_total_ops = (cnt_total_ops[k] > 0) ? (sum_total_ops[k] / cnt_total_ops[k]) : 0
       mean_lock_hold = (cnt_lock_hold_ns[k] > 0) ? (sum_lock_hold_ns[k] / cnt_lock_hold_ns[k]) : 0
+      mean_pre_front_wait_ns = (cnt_pre_front_wait_ns[k] > 0) ? (sum_pre_front_wait_ns[k] / cnt_pre_front_wait_ns[k]) : 0
+      mean_front_wait_ns = (cnt_front_wait_ns[k] > 0) ? (sum_front_wait_ns[k] / cnt_front_wait_ns[k]) : 0
+      mean_reacquire_acquisitions = (cnt_reacquire_acquisitions[k] > 0) ? (sum_reacquire_acquisitions[k] / cnt_reacquire_acquisitions[k]) : 0
+      mean_reacquire_rate = (cnt_reacquire_rate[k] > 0) ? (sum_reacquire_rate[k] / cnt_reacquire_rate[k]) : 0
       mean_wait_ns = (cnt_wait_ns[k] > 0) ? (sum_wait_ns[k] / cnt_wait_ns[k]) : 0
       mean_handoff_ns = (cnt_handoff_ns[k] > 0) ? (sum_handoff_ns[k] / cnt_handoff_ns[k]) : 0
       mean_lock_hold_samples = (cnt_lock_hold_samples[k] > 0) ? (sum_lock_hold_samples[k] / cnt_lock_hold_samples[k]) : 0
+      mean_phase_wait_samples = (cnt_phase_wait_samples[k] > 0) ? (sum_phase_wait_samples[k] / cnt_phase_wait_samples[k]) : 0
       mean_cpu_pct = (cnt_cpu_pct[k] > 0) ? (sum_cpu_pct[k] / cnt_cpu_pct[k]) : 0
 
       split(k, parts, FS)
-      printf "%s,%s,%s,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", \
+      printf "%s,%s,%s,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", \
              parts[1], parts[2], parts[3], n[k], mean, mean_elapsed, \
-             mean_total_ops, mean_lock_hold, mean_wait_ns, mean_handoff_ns, \
-             mean_lock_hold_samples, mean_cpu_pct
+             mean_total_ops, mean_lock_hold, mean_pre_front_wait_ns, \
+             mean_front_wait_ns, mean_reacquire_acquisitions, \
+             mean_reacquire_rate, mean_wait_ns, mean_handoff_ns, \
+             mean_lock_hold_samples, mean_phase_wait_samples, mean_cpu_pct
     }
   }
 ' "$output_raw" | sort -t',' -k1,1n -k2,2n -k3,3n > "$output_summary"

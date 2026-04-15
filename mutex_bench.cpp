@@ -243,11 +243,21 @@ inline void BurnIters(uint64_t iters,
 template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   static_assert(locks_bench::LockBench<LockBenchT>);
 
+  auto set_sampling_if_supported = [](LockBenchT &bench, bool enabled) {
+    if constexpr (requires { bench.set_sampling(enabled); }) {
+      bench.set_sampling(enabled);
+    }
+  };
+
   LockBenchT lock_bench(
       locks_bench::LockBenchOptions{cfg.timeslice_extension_mode});
   std::atomic<uint64_t> total_ops{0};
   std::atomic<uint64_t> total_lock_hold_cycles{0};
   std::atomic<uint64_t> total_lock_hold_samples{0};
+  std::atomic<uint64_t> total_pre_front_wait_cycles{0};
+  std::atomic<uint64_t> total_front_wait_cycles{0};
+  std::atomic<uint64_t> total_phase_wait_samples{0};
+  std::atomic<uint64_t> total_reacquire_acquisitions{0};
   std::atomic<uint64_t> total_thread_elapsed_ns{0};
   std::atomic<int> workers_ready{0};
   std::atomic<int> warmup_done{0};
@@ -265,6 +275,10 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
       uint64_t local_lock_hold_cycles = 0;
       uint64_t local_lock_hold_samples = 0;
+      uint64_t local_pre_front_wait_cycles = 0;
+      uint64_t local_front_wait_cycles = 0;
+      uint64_t local_phase_wait_samples = 0;
+      uint64_t local_reacquire_acquisitions = 0;
       uint64_t local_ops = 0;
 
       workers_ready.fetch_add(1, std::memory_order_release);
@@ -297,6 +311,8 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
           --sample_countdown;
         }
 
+        set_sampling_if_supported(lock_bench, do_timing_sample);
+
         uint64_t after_lock = 0;
         uint64_t before_unlock = 0;
 
@@ -315,6 +331,15 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
             local_lock_hold_cycles += (before_unlock - after_lock);
             ++local_lock_hold_samples;
           }
+          if constexpr (requires { guard_state.pre_front_wait_cycles; }) {
+            local_pre_front_wait_cycles += guard_state.pre_front_wait_cycles;
+            local_front_wait_cycles += guard_state.front_wait_cycles;
+            local_phase_wait_samples += guard_state.phase_wait_samples;
+          }
+        }
+        if constexpr (requires { guard_state.reacquired_after_own_unlock; }) {
+          local_reacquire_acquisitions +=
+              guard_state.reacquired_after_own_unlock ? 1ULL : 0ULL;
         }
         BurnIters(cfg.outside_ns, cfg.burn_calibration);
         ++local_ops;
@@ -330,6 +355,14 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
                                        std::memory_order_relaxed);
       total_lock_hold_samples.fetch_add(local_lock_hold_samples,
                                         std::memory_order_relaxed);
+      total_pre_front_wait_cycles.fetch_add(local_pre_front_wait_cycles,
+                                            std::memory_order_relaxed);
+      total_front_wait_cycles.fetch_add(local_front_wait_cycles,
+                                        std::memory_order_relaxed);
+      total_phase_wait_samples.fetch_add(local_phase_wait_samples,
+                                         std::memory_order_relaxed);
+      total_reacquire_acquisitions.fetch_add(local_reacquire_acquisitions,
+                                             std::memory_order_relaxed);
       total_thread_elapsed_ns.fetch_add(local_thread_elapsed_ns,
                                         std::memory_order_relaxed);
       total_ops.fetch_add(local_ops, std::memory_order_relaxed);
@@ -379,6 +412,14 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
       total_lock_hold_cycles.load(std::memory_order_relaxed);
   const uint64_t lock_hold_samples =
       total_lock_hold_samples.load(std::memory_order_relaxed);
+  const uint64_t pre_front_wait_cycles =
+      total_pre_front_wait_cycles.load(std::memory_order_relaxed);
+  const uint64_t front_wait_cycles =
+      total_front_wait_cycles.load(std::memory_order_relaxed);
+  const uint64_t phase_wait_samples =
+      total_phase_wait_samples.load(std::memory_order_relaxed);
+  const uint64_t reacquire_acquisitions =
+      total_reacquire_acquisitions.load(std::memory_order_relaxed);
   const uint64_t thread_elapsed_ns_total =
       total_thread_elapsed_ns.load(std::memory_order_relaxed);
   const double throughput = ops / elapsed_s;
@@ -387,6 +428,19 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
                               static_cast<double>(lock_hold_samples)
                         : 0.0;
   const double avg_lock_hold_ns = avg_lock_hold_cycles * ns_per_cycle;
+  const double avg_pre_front_wait_cycles =
+      phase_wait_samples ? static_cast<double>(pre_front_wait_cycles) /
+                               static_cast<double>(phase_wait_samples)
+                         : 0.0;
+  const double avg_front_wait_cycles =
+      phase_wait_samples ? static_cast<double>(front_wait_cycles) /
+                               static_cast<double>(phase_wait_samples)
+                         : 0.0;
+  const double avg_pre_front_wait_ns = avg_pre_front_wait_cycles * ns_per_cycle;
+  const double avg_front_wait_ns = avg_front_wait_cycles * ns_per_cycle;
+  const double reacquire_rate =
+      ops ? static_cast<double>(reacquire_acquisitions) / static_cast<double>(ops)
+          : 0.0;
   const double estimated_total_lock_hold_ns =
       avg_lock_hold_ns * static_cast<double>(ops);
   const double avg_wait_ns_estimated =
@@ -412,7 +466,14 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   std::cout << std::setprecision(2);
   std::cout << "throughput_ops_per_sec: " << throughput << "\n";
   std::cout << "lock_hold_samples: " << lock_hold_samples << "\n";
+  std::cout << "phase_wait_samples: " << phase_wait_samples << "\n";
+  std::cout << "reacquire_acquisitions: " << reacquire_acquisitions << "\n";
   std::cout << "avg_lock_hold_ns: " << avg_lock_hold_ns << "\n";
+  std::cout << "avg_pre_front_wait_ns: " << avg_pre_front_wait_ns << "\n";
+  std::cout << "avg_front_wait_ns: " << avg_front_wait_ns << "\n";
+  std::cout << std::setprecision(6);
+  std::cout << "reacquire_rate: " << reacquire_rate << "\n";
+  std::cout << std::setprecision(2);
   std::cout << "avg_wait_ns_estimated: " << avg_wait_ns_estimated << "\n";
   std::cout << "avg_lock_handoff_ns_estimated: "
             << avg_lock_handoff_ns_estimated << "\n";

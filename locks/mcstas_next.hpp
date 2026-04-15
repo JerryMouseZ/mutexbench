@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
 #else
@@ -16,13 +17,23 @@ struct McsTasNextLock {
 
   struct LockState {
     Node *node{nullptr};
+    uint64_t pre_front_wait_cycles{0};
+    uint64_t front_wait_cycles{0};
+    uint64_t phase_wait_samples{0};
   };
+
+  void set_sampling(bool enabled) const { SamplingEnabled() = enabled; }
 
   [[nodiscard]] inline LockState lock() {
     // Fast path: single TAS probe.
     if (!locked_.exchange(true, std::memory_order_acquire)) {
       return {};
     }
+
+    const bool sample_phase_wait = SamplingEnabled();
+    uint64_t pre_front_wait_cycles = 0;
+    uint64_t front_wait_cycles = 0;
+    uint64_t front_wait_start = 0;
 
     // Slow path: MCS queue to serialize contenders.
     Node &my_node = ThreadNode();
@@ -34,20 +45,47 @@ struct McsTasNextLock {
     if (pred != nullptr) {
       my_node.waiting.store(true, std::memory_order_relaxed);
       pred->next.store(&my_node, std::memory_order_release);
+      const uint64_t pre_front_wait_start =
+          sample_phase_wait ? ReadCycles() : 0;
       while (!my_node.is_next.load(std::memory_order_acquire)) {
         Pause();
+      }
+      if (sample_phase_wait) {
+        const uint64_t pre_front_wait_end = ReadCycles();
+        if (pre_front_wait_end >= pre_front_wait_start) {
+          pre_front_wait_cycles = pre_front_wait_end - pre_front_wait_start;
+        }
+        front_wait_start = ReadCycles();
       }
       while (my_node.waiting.load(std::memory_order_acquire)) {
         Pause();
       }
+      if (sample_phase_wait) {
+        const uint64_t front_wait_end = ReadCycles();
+        if (front_wait_end >= front_wait_start) {
+          front_wait_cycles = front_wait_end - front_wait_start;
+        }
+      }
     } else {
+      if (sample_phase_wait) {
+        front_wait_start = ReadCycles();
+      }
       while (locked_.exchange(true, std::memory_order_acquire)) {
         Pause();
+      }
+      if (sample_phase_wait) {
+        const uint64_t front_wait_end = ReadCycles();
+        if (front_wait_end >= front_wait_start) {
+          front_wait_cycles = front_wait_end - front_wait_start;
+        }
       }
     }
 
     SignalSuccessorIfPresent(my_node);
-    return {&my_node};
+    return {.node = &my_node,
+            .pre_front_wait_cycles = pre_front_wait_cycles,
+            .front_wait_cycles = front_wait_cycles,
+            .phase_wait_samples = sample_phase_wait ? 1ULL : 0ULL};
   }
 
   inline void unlock(LockState &state) {
@@ -81,6 +119,22 @@ private:
   [[nodiscard]] static inline Node &ThreadNode() {
     static thread_local Node my_node{};
     return my_node;
+  }
+
+  [[nodiscard]] static inline bool &SamplingEnabled() {
+    static thread_local bool enabled = false;
+    return enabled;
+  }
+
+  [[nodiscard]] static inline uint64_t ReadCycles() {
+#if defined(__x86_64__) || defined(__i386__)
+    return __rdtsc();
+#else
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+#endif
   }
 
   inline void SignalSuccessorIfPresent(Node &node) {

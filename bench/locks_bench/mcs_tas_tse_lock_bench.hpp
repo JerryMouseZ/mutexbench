@@ -13,6 +13,8 @@ struct McsTasTseLockBench {
 
   void prepare_thread() { lock_.prepare_thread(); }
 
+  void set_sampling(bool enabled) { lock_.set_sampling(enabled); }
+
   [[nodiscard]] GuardState lock() { return lock_.lock(); }
 
   void unlock(GuardState &state) { lock_.unlock(state); }
