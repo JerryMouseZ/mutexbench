@@ -31,17 +31,6 @@ inline void SpinPause() noexcept {
 #endif
 }
 
-inline uint64_t ReadTsc() {
-#if defined(__x86_64__) || defined(__i386__)
-  return __rdtsc();
-#else
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          Clock::now().time_since_epoch())
-          .count());
-#endif
-}
-
 struct Config {
   static constexpr uint64_t kDefaultBurnCalibrationNumerator = 9;
   static constexpr uint64_t kDefaultBurnCalibrationDenominator = 32;
@@ -246,7 +235,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   LockBenchT lock_bench(
       locks_bench::LockBenchOptions{cfg.timeslice_extension_mode});
   std::atomic<uint64_t> total_ops{0};
-  std::atomic<uint64_t> total_lock_hold_cycles{0};
+  std::atomic<uint64_t> total_lock_hold_ns{0};
   std::atomic<uint64_t> total_lock_hold_samples{0};
   std::atomic<uint64_t> total_thread_elapsed_ns{0};
   std::atomic<int> workers_ready{0};
@@ -263,7 +252,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
     workers.emplace_back([&, thread_index = t]() {
       lock_bench.prepare_thread();
 
-      uint64_t local_lock_hold_cycles = 0;
+      uint64_t local_lock_hold_ns = 0;
       uint64_t local_lock_hold_samples = 0;
       uint64_t local_ops = 0;
 
@@ -297,22 +286,26 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
           --sample_countdown;
         }
 
-        uint64_t after_lock = 0;
-        uint64_t before_unlock = 0;
+        Clock::time_point after_lock;
+        Clock::time_point before_unlock;
 
         auto guard_state = lock_bench.lock();
         if (do_timing_sample) {
-          after_lock = ReadTsc();
+          after_lock = Clock::now();
         }
         BurnIters(cfg.critical_ns, cfg.burn_calibration);
         if (do_timing_sample) {
-          before_unlock = ReadTsc();
+          before_unlock = Clock::now();
         }
         lock_bench.unlock(guard_state);
 
         if (do_timing_sample) {
-          if (before_unlock >= after_lock) {
-            local_lock_hold_cycles += (before_unlock - after_lock);
+          const auto hold_ns =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  before_unlock - after_lock)
+                  .count();
+          if (hold_ns >= 0) {
+            local_lock_hold_ns += static_cast<uint64_t>(hold_ns);
             ++local_lock_hold_samples;
           }
         }
@@ -320,14 +313,13 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
         ++local_ops;
       }
       const auto thread_measure_end = Clock::now();
-      const auto local_thread_elapsed_ns =
-          static_cast<uint64_t>(std::chrono::duration_cast<
-                                    std::chrono::nanoseconds>(
-                                    thread_measure_end - thread_measure_start)
-                                    .count());
+      const auto local_thread_elapsed_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              thread_measure_end - thread_measure_start)
+              .count());
 
-      total_lock_hold_cycles.fetch_add(local_lock_hold_cycles,
-                                       std::memory_order_relaxed);
+      total_lock_hold_ns.fetch_add(local_lock_hold_ns,
+                                   std::memory_order_relaxed);
       total_lock_hold_samples.fetch_add(local_lock_hold_samples,
                                         std::memory_order_relaxed);
       total_thread_elapsed_ns.fetch_add(local_thread_elapsed_ns,
@@ -352,7 +344,6 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   }
 
   const auto start = Clock::now();
-  const uint64_t tsc_start = ReadTsc();
   measure_start.store(true, std::memory_order_release);
   std::this_thread::sleep_for(std::chrono::milliseconds(cfg.duration_ms));
   measure_stop.store(true, std::memory_order_release);
@@ -360,7 +351,6 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   for (auto &th : workers) {
     th.join();
   }
-  const uint64_t tsc_end = ReadTsc();
   const auto end = Clock::now();
 
   const double elapsed_s =
@@ -370,23 +360,18 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
       std::chrono::duration_cast<std::chrono::duration<double, std::nano>>(
           end - start)
           .count();
-  const uint64_t elapsed_cycles =
-      (tsc_end > tsc_start) ? (tsc_end - tsc_start) : 0;
-  const double ns_per_cycle =
-      elapsed_cycles ? (elapsed_ns / static_cast<double>(elapsed_cycles)) : 0.0;
   const uint64_t ops = total_ops.load(std::memory_order_relaxed);
-  const uint64_t lock_hold_cycles =
-      total_lock_hold_cycles.load(std::memory_order_relaxed);
+  const uint64_t lock_hold_ns =
+      total_lock_hold_ns.load(std::memory_order_relaxed);
   const uint64_t lock_hold_samples =
       total_lock_hold_samples.load(std::memory_order_relaxed);
   const uint64_t thread_elapsed_ns_total =
       total_thread_elapsed_ns.load(std::memory_order_relaxed);
   const double throughput = ops / elapsed_s;
-  const double avg_lock_hold_cycles =
-      lock_hold_samples ? static_cast<double>(lock_hold_cycles) /
+  const double avg_lock_hold_ns =
+      lock_hold_samples ? static_cast<double>(lock_hold_ns) /
                               static_cast<double>(lock_hold_samples)
                         : 0.0;
-  const double avg_lock_hold_ns = avg_lock_hold_cycles * ns_per_cycle;
   const double estimated_total_lock_hold_ns =
       avg_lock_hold_ns * static_cast<double>(ops);
   const double avg_wait_ns_estimated =

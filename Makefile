@@ -7,7 +7,7 @@ TARGETS := mutex_bench curve_bench
 DEPFILES := $(TARGETS:%=%.d)
 DEPFLAGS = -MMD -MP -MF $@.d -MT $@
 
-.PHONY: all clean test-remove-outside-iters test-sweep-throughput-cpu
+.PHONY: all clean test-monotonic-timing test-remove-outside-iters test-sweep-throughput-cpu
 
 all: $(TARGETS)
 
@@ -21,6 +21,9 @@ curve_bench: curve_bench.cpp
 
 clean:
 	rm -f $(TARGETS) $(DEPFILES)
+
+test-monotonic-timing:
+	bash scripts/test_monotonic_timing.sh
 
 test-remove-outside-iters: mutex_bench
 	bash scripts/test_remove_outside_iters.sh
