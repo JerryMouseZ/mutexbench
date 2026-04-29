@@ -191,6 +191,21 @@ class CurrentBssGlobals(ctypes.Structure):
     ]
 
 
+class MinimalDataGlobals(ctypes.Structure):
+    _fields_ = [
+        ("uei", UserExitInfo),
+    ]
+
+
+class MinimalBssGlobals(ctypes.Structure):
+    _fields_ = [
+        ("stats_only_mode", ctypes.c_uint32),
+        ("_pad_4", ctypes.c_uint8 * 4),
+        ("dbg_acct_calls", ctypes.c_uint64),
+        ("dbg_acct_read_ok", ctypes.c_uint64),
+    ]
+
+
 @dataclass(frozen=True)
 class LayoutProfile:
     name: str
@@ -199,6 +214,9 @@ class LayoutProfile:
 
 
 LAYOUT_PROFILES = {
+    "minimal": LayoutProfile(
+        name="minimal", data_struct=MinimalDataGlobals, bss_struct=MinimalBssGlobals
+    ),
     "v1": LayoutProfile(name="v1", data_struct=LegacyDataGlobals, bss_struct=LegacyBssGlobals),
     "v2": LayoutProfile(name="v2", data_struct=CurrentDataGlobals, bss_struct=CurrentBssGlobals),
 }
@@ -273,13 +291,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--layout",
         default="auto",
-        choices=["auto", "v1", "v2", "legacy", "current"],
-        help="BPF globals layout profile: auto, v1/legacy, or v2/current (default: auto)",
+        choices=["auto", "minimal", "v1", "v2", "legacy", "current"],
+        help="BPF globals layout profile: auto, minimal, v1/legacy, or v2/current (default: auto)",
     )
     parser.add_argument(
         "--pid",
         type=int,
         help="Use a specific owner PID instead of auto-discovery",
+    )
+    parser.add_argument(
+        "--discover-timeout-s",
+        type=float,
+        default=2.0,
+        help="Seconds to wait for sched_ext owner maps to become visible (default: 2.0)",
     )
     parser.add_argument(
         "--include-agg",
@@ -315,6 +339,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--count must be >= 0")
     if args.duration_s < 0:
         parser.error("--duration-s must be >= 0")
+    if args.discover_timeout_s < 0:
+        parser.error("--discover-timeout-s must be >= 0")
     if args.slot_limit <= 0:
         parser.error("--slot-limit must be > 0")
     return args
@@ -367,6 +393,15 @@ def parse_struct_ops_map_ids(text: str) -> List[int]:
                 map_ids.append(int(parts[0][:-1]))
             except ValueError:
                 continue
+    return map_ids
+
+
+def parse_map_ids(text: str) -> List[int]:
+    map_ids: List[int] = []
+    for line in text.splitlines():
+        match = re.match(r"^\s*(\d+):\s+", line)
+        if match:
+            map_ids.append(int(match.group(1)))
     return map_ids
 
 
@@ -429,9 +464,9 @@ def parse_map_show(text: str, owner_pid: int, map_id: int, fd: int) -> Optional[
 
 
 def canonical_map_name(name: str) -> str:
-    if name.endswith(".bss") or name == ".bss" or name.endswith("bss"):
+    if name.endswith(".bss") or name == ".bss":
         return "bss"
-    if name.endswith(".data") or name == ".data" or name.endswith("data"):
+    if name.endswith(".data") or name == ".data":
         return "data"
     if name.startswith("stats_map"):
         return "stats_map"
@@ -489,6 +524,38 @@ def discover_maps_for_pid(pid: int) -> Dict[str, MapMeta]:
     return maps
 
 
+def discover_maps_globally() -> Dict[str, MapMeta]:
+    maps: Dict[str, MapMeta] = {}
+    for map_id in parse_map_ids(bpftool_text(["map", "show"])):
+        try:
+            fd = bpf_map_get_fd_by_id(map_id)
+            meta = parse_map_show(bpftool_text(["map", "show", "id", str(map_id)]), 0, map_id, fd)
+        except (OSError, SystemExit):
+            continue
+        if meta is None:
+            os.close(fd)
+            continue
+
+        key = canonical_map_name(meta.name)
+        if key in {
+            "bss",
+            "data",
+            "stats_map",
+            "agg_percpu_map",
+            "ssc_vote_slot_map",
+            "task_ctx_map",
+            "thread_ctx_addr_map",
+            "cpu_to_node",
+        }:
+            if key in maps:
+                os.close(fd)
+            else:
+                maps[key] = meta
+        else:
+            os.close(fd)
+    return maps
+
+
 def sched_ext_ops_matches(expected_ops: str, actual_ops: str) -> bool:
     return actual_ops == expected_ops or actual_ops.startswith(f"{expected_ops}_")
 
@@ -503,20 +570,37 @@ def ensure_sched_ext_ops(expected_ops: str) -> None:
 
 
 def choose_pid_and_maps(args: argparse.Namespace) -> tuple[int, Dict[str, MapMeta]]:
+    deadline_ns = time.monotonic_ns() + int(args.discover_timeout_s * 1_000_000_000)
+    last_owner_pids: List[int] = []
+
+    while True:
+        if args.pid is not None:
+            maps = discover_maps_for_pid(args.pid)
+            if "bss" in maps and "data" in maps:
+                return args.pid, maps
+        else:
+            owner_pids = discover_owner_pids()
+            last_owner_pids = owner_pids
+            for pid in owner_pids:
+                maps = discover_maps_for_pid(pid)
+                if "bss" in maps and "data" in maps:
+                    return pid, maps
+            maps = discover_maps_globally()
+            if "bss" in maps and "data" in maps:
+                return maps["bss"].owner_pid, maps
+
+        if time.monotonic_ns() >= deadline_ns:
+            break
+        time.sleep(0.02)
+
     if args.pid is not None:
-        maps = discover_maps_for_pid(args.pid)
-        if "bss" not in maps or "data" not in maps:
-            raise SystemExit(f"PID {args.pid} does not expose the required lb_simple .bss/.data maps")
-        return args.pid, maps
+        raise SystemExit(f"PID {args.pid} does not expose the required lb_simple .bss/.data maps")
 
-    owner_pids = discover_owner_pids()
-    if not owner_pids:
-        raise SystemExit("no sched_ext owner PID was found via bpftool struct_ops show")
-
-    for pid in owner_pids:
-        maps = discover_maps_for_pid(pid)
-        if "bss" in maps and "data" in maps:
-            return pid, maps
+    if not last_owner_pids:
+        raise SystemExit(
+            "no sched_ext owner PID was found via bpftool struct_ops show, "
+            "and global map discovery did not find lb_simple .bss/.data maps"
+        )
 
     raise SystemExit(
         "found sched_ext owner PID(s), but none exposed the required lb_simple .bss/.data maps"
@@ -584,6 +668,8 @@ def search_phase_name(phase: int) -> str:
 
 
 def active_cpu_list(bss: ctypes.Structure, data: ctypes.Structure) -> List[int]:
+    if not hasattr(data, "ssc_active_count") or not hasattr(bss, "ssc_cpu_count"):
+        return []
     limit = min(int(data.ssc_active_count), int(bss.ssc_cpu_count), MAX_CPUS)
     return [int(bss.ssc_cpu_list[idx]) for idx in range(limit)]
 
@@ -649,6 +735,32 @@ def read_slot_summary(meta: MapMeta, active_count: int, slot_limit: int) -> Dict
     }
 
 
+def empty_agg_summary() -> Dict[str, int]:
+    return {
+        "agg_cpu_nonzero": 0,
+        "agg_epoch_max": 0,
+        "agg_run_ns_sum": 0,
+        "agg_wait_ns_sum": 0,
+        "agg_unlock_count_sum": 0,
+    }
+
+
+def empty_slot_summary() -> Dict[str, int]:
+    return {
+        "slot_count": 0,
+        "slot_epoch_max": 0,
+        "slot_run_ns_sum": 0,
+        "slot_wait_ns_sum": 0,
+        "slot_unlock_count_sum": 0,
+    }
+
+
+def int_field(obj: ctypes.Structure, name: str, default: int = 0) -> int:
+    if not hasattr(obj, name):
+        return default
+    return int(getattr(obj, name))
+
+
 def normalize_layout_name(name: str) -> str:
     return LAYOUT_ALIASES.get(name, name)
 
@@ -658,7 +770,10 @@ def choose_layout_profile(args: argparse.Namespace, maps: Dict[str, MapMeta]) ->
     if requested != "auto":
         return LAYOUT_PROFILES[requested]
 
+    bss_size = maps["bss"].value_size
     data_size = maps["data"].value_size
+    if bss_size < ctypes.sizeof(LegacyBssGlobals):
+        return LAYOUT_PROFILES["minimal"]
     if data_size >= ctypes.sizeof(CurrentDataGlobals):
         return LAYOUT_PROFILES["v2"]
     return LAYOUT_PROFILES["v1"]
@@ -795,56 +910,54 @@ def take_sample(
         "ops_name": args.ops_name,
         "owner_pid": owner_pid,
         "layout_profile": layout.name,
-        "dominant_node": int(bss.dominant_node),
-        "ssc_cpu_count": int(bss.ssc_cpu_count),
-        "ssc_active_count": int(data.ssc_active_count),
-        "ssc_best_count": int(data.ssc_best_count),
-        "ssc_refine_low": int(data.ssc_refine_low),
-        "ssc_refine_high": int(data.ssc_refine_high),
+        "dominant_node": int_field(bss, "dominant_node", -1),
+        "ssc_cpu_count": int_field(bss, "ssc_cpu_count"),
+        "ssc_active_count": int_field(data, "ssc_active_count"),
+        "ssc_best_count": int_field(data, "ssc_best_count"),
+        "ssc_refine_low": int_field(data, "ssc_refine_low"),
+        "ssc_refine_high": int_field(data, "ssc_refine_high"),
         "ssc_active_cpus": ";".join(str(cpu) for cpu in active_cpu_list(bss, data)),
-        "stats_only_mode": int(bss.stats_only_mode),
-        "forced_release_cnt": int(bss.forced_release_cnt),
-        "ssc_vote_window_ns": int(data.ssc_vote_window_ns),
-        "ssc_vote_epoch": int(bss.ssc_vote_epoch),
-        "ssc_vote_start_ns": int(bss.ssc_vote_start_ns),
-        "ssc_vote_decided_epoch": int(bss.ssc_vote_decided_epoch),
-        "ssc_vote_publish_count": int(bss.ssc_vote_publish_count),
-        "ssc_vote_sum_run": int(bss.ssc_vote_sum_run),
-        "ssc_vote_sum_wait": int(bss.ssc_vote_sum_wait),
-        "ssc_vote_sum_unlock_count": int(bss.ssc_vote_sum_unlock_count),
-        "ssc_vote_last_score": int(bss.ssc_vote_last_score),
-        "ssc_vote_last_effective_score": int(bss.ssc_vote_last_effective_score),
-        "ssc_bootstrap_mature_windows": int(bss.ssc_bootstrap_mature_windows),
-        "ssc_pending_capped_grow": int(bss.ssc_pending_capped_grow),
-        "ssc_vote_consec_grow": int(bss.ssc_vote_consec_grow),
-        "ssc_vote_consec_shrink": int(bss.ssc_vote_consec_shrink),
-        "ssc_search_phase": int(bss.ssc_search_phase),
-        "ssc_search_phase_name": search_phase_name(int(bss.ssc_search_phase)),
-        "ssc_best_score": int(bss.ssc_best_score),
-        "ssc_best_candidate_count": int(bss.ssc_best_candidate_count),
-        "ssc_best_candidate_streak": int(bss.ssc_best_candidate_streak),
-        "dbg_counters_enabled": int(bss.dbg_counters_enabled),
-        "dbg_win_run": int(bss.dbg_win_run),
-        "dbg_win_wait": int(bss.dbg_win_wait),
-        "dbg_acct_calls": int(bss.dbg_acct_calls),
-        "dbg_acct_read_ok": int(bss.dbg_acct_read_ok),
-        "dbg_refine_entries": int(bss.dbg_refine_entries),
-        "dbg_refine_single_point": int(bss.dbg_refine_single_point),
-        "dbg_refine_noop_targets": int(bss.dbg_refine_noop_targets),
-        "dbg_noop_resizes": int(bss.dbg_noop_resizes),
-        "dbg_active_count_changes": int(bss.dbg_active_count_changes),
-        "dbg_bad_steady_rebases": int(bss.dbg_bad_steady_rebases),
-        "dbg_task_ctx_creates": int(bss.dbg_task_ctx_creates),
-        "dbg_task_ctx_misses": int(bss.dbg_task_ctx_misses),
-        "dbg_grow_uses_capped_step": int(bss.dbg_grow_uses_capped_step),
-        "dbg_last_grow_target": int(bss.dbg_last_grow_target),
+        "stats_only_mode": int_field(bss, "stats_only_mode"),
+        "forced_release_cnt": int_field(bss, "forced_release_cnt"),
+        "ssc_vote_window_ns": int_field(data, "ssc_vote_window_ns"),
+        "ssc_vote_epoch": int_field(bss, "ssc_vote_epoch"),
+        "ssc_vote_start_ns": int_field(bss, "ssc_vote_start_ns"),
+        "ssc_vote_decided_epoch": int_field(bss, "ssc_vote_decided_epoch"),
+        "ssc_vote_publish_count": int_field(bss, "ssc_vote_publish_count"),
+        "ssc_vote_sum_run": int_field(bss, "ssc_vote_sum_run"),
+        "ssc_vote_sum_wait": int_field(bss, "ssc_vote_sum_wait"),
+        "ssc_vote_sum_unlock_count": int_field(bss, "ssc_vote_sum_unlock_count"),
+        "ssc_vote_last_score": int_field(bss, "ssc_vote_last_score"),
+        "ssc_vote_last_effective_score": int_field(bss, "ssc_vote_last_effective_score"),
+        "ssc_bootstrap_mature_windows": int_field(bss, "ssc_bootstrap_mature_windows"),
+        "ssc_pending_capped_grow": int_field(bss, "ssc_pending_capped_grow"),
+        "ssc_vote_consec_grow": int_field(bss, "ssc_vote_consec_grow"),
+        "ssc_vote_consec_shrink": int_field(bss, "ssc_vote_consec_shrink"),
+        "ssc_search_phase": int_field(bss, "ssc_search_phase"),
+        "ssc_search_phase_name": search_phase_name(int_field(bss, "ssc_search_phase")),
+        "ssc_best_score": int_field(bss, "ssc_best_score"),
+        "ssc_best_candidate_count": int_field(bss, "ssc_best_candidate_count"),
+        "ssc_best_candidate_streak": int_field(bss, "ssc_best_candidate_streak"),
+        "dbg_counters_enabled": int_field(bss, "dbg_counters_enabled"),
+        "dbg_win_run": int_field(bss, "dbg_win_run"),
+        "dbg_win_wait": int_field(bss, "dbg_win_wait"),
+        "dbg_acct_calls": int_field(bss, "dbg_acct_calls"),
+        "dbg_acct_read_ok": int_field(bss, "dbg_acct_read_ok"),
+        "dbg_refine_entries": int_field(bss, "dbg_refine_entries"),
+        "dbg_refine_single_point": int_field(bss, "dbg_refine_single_point"),
+        "dbg_refine_noop_targets": int_field(bss, "dbg_refine_noop_targets"),
+        "dbg_noop_resizes": int_field(bss, "dbg_noop_resizes"),
+        "dbg_active_count_changes": int_field(bss, "dbg_active_count_changes"),
+        "dbg_bad_steady_rebases": int_field(bss, "dbg_bad_steady_rebases"),
+        "dbg_task_ctx_creates": int_field(bss, "dbg_task_ctx_creates"),
+        "dbg_task_ctx_misses": int_field(bss, "dbg_task_ctx_misses"),
+        "dbg_grow_uses_capped_step": int_field(bss, "dbg_grow_uses_capped_step"),
+        "dbg_last_grow_target": int_field(bss, "dbg_last_grow_target"),
     }
 
     if args.include_agg:
         meta = maps.get("agg_percpu_map")
-        if meta is None:
-            raise SystemExit("--include-agg was requested, but agg_percpu_map was not found")
-        row.update(read_agg_summary(meta))
+        row.update(read_agg_summary(meta) if meta is not None else empty_agg_summary())
 
     if args.include_stats_map:
         meta = maps.get("stats_map")
@@ -854,9 +967,10 @@ def take_sample(
 
     if args.include_slots:
         meta = maps.get("ssc_vote_slot_map")
-        if meta is None:
-            raise SystemExit("--include-slots was requested, but ssc_vote_slot_map was not found")
-        row.update(read_slot_summary(meta, int(data.ssc_active_count), args.slot_limit))
+        if meta is not None and hasattr(data, "ssc_active_count"):
+            row.update(read_slot_summary(meta, int(data.ssc_active_count), args.slot_limit))
+        else:
+            row.update(empty_slot_summary())
 
     return row
 
