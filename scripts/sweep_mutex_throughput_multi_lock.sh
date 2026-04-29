@@ -528,6 +528,17 @@ should_auto_sudo() {
   return 1
 }
 
+append_lb_simple_env_args() {
+  local -n env_args_ref="$1"
+
+  if [[ -n "${LB_SIMPLE_CPU_MASK_K+x}" ]]; then
+    env_args_ref+=("LB_SIMPLE_CPU_MASK_K=${LB_SIMPLE_CPU_MASK_K}")
+  fi
+  if [[ -n "${K+x}" ]]; then
+    env_args_ref+=("K=${K}")
+  fi
+}
+
 scx_lavd_started="0"
 scx_lavd_pid=""
 declare -a scx_lavd_cmd=()
@@ -1066,6 +1077,9 @@ for item in "${lock_items[@]}"; do
     esac
   fi
 
+  lb_simple_env_args=()
+  append_lb_simple_env_args lb_simple_env_args
+
   if [[ "$lock_kind" == "native" ]]; then
     cmd=(
       "$sweep_script"
@@ -1085,9 +1099,9 @@ for item in "${lock_items[@]}"; do
       --output-summary "$summary_out"
     )
     if [[ "$mcs_simple_disable_bpf" == "1" ]]; then
-      cmd=(env "MCS_SIMPLE_DEBUG_COUNTERS=${MCS_SIMPLE_DEBUG_COUNTERS:-}" "MCS_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "${lb_simple_env_args[@]}" "MCS_SIMPLE_DEBUG_COUNTERS=${MCS_SIMPLE_DEBUG_COUNTERS:-}" "MCS_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "MCS_SIMPLE_DEBUG_COUNTERS=${MCS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
+      cmd=(env "${lb_simple_env_args[@]}" "MCS_SIMPLE_DEBUG_COUNTERS=${MCS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   elif [[ "$lock_kind" == "mcs_tas_simple" ]]; then
     cmd=(
@@ -1100,9 +1114,9 @@ for item in "${lock_items[@]}"; do
       --output-summary "$summary_out"
     )
     if [[ "$mcs_tas_simple_disable_bpf" == "1" ]]; then
-      cmd=(env "MCS_TAS_SIMPLE_DEBUG_COUNTERS=${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}" "MCS_TAS_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "${lb_simple_env_args[@]}" "MCS_TAS_SIMPLE_DEBUG_COUNTERS=${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}" "MCS_TAS_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "MCS_TAS_SIMPLE_DEBUG_COUNTERS=${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
+      cmd=(env "${lb_simple_env_args[@]}" "MCS_TAS_SIMPLE_DEBUG_COUNTERS=${MCS_TAS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   elif [[ "$lock_kind" == "ttas_simple" ]]; then
     cmd=(
@@ -1115,9 +1129,9 @@ for item in "${lock_items[@]}"; do
       --output-summary "$summary_out"
     )
     if [[ "$ttas_simple_disable_bpf" == "1" ]]; then
-      cmd=(env "TTAS_SIMPLE_DEBUG_COUNTERS=${TTAS_SIMPLE_DEBUG_COUNTERS:-}" "TTAS_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "${lb_simple_env_args[@]}" "TTAS_SIMPLE_DEBUG_COUNTERS=${TTAS_SIMPLE_DEBUG_COUNTERS:-}" "TTAS_SIMPLE_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "TTAS_SIMPLE_DEBUG_COUNTERS=${TTAS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
+      cmd=(env "${lb_simple_env_args[@]}" "TTAS_SIMPLE_DEBUG_COUNTERS=${TTAS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   elif [[ "$lock_kind" == "flexguard_simple" ]]; then
     cmd=(
@@ -1129,6 +1143,7 @@ for item in "${lock_items[@]}"; do
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
+    cmd=(env "${lb_simple_env_args[@]}" "${cmd[@]}")
   else
     cmd=(
       "$lock_script"

@@ -29,9 +29,11 @@ Options:
   --timeslice-extension M      off|auto|require (default: off; ignored for *-tse lock kinds)
   --repeats N                  runs per parameter point (default: 3)
   --profile                    Record perf.data for each run and keep it beside raw.csv
+  --sample-heatmap             Record per-run lock_stats heatmap CSV beside raw.csv
   --sample-bpf                 Record per-run lb_simple BPF sampler CSV beside raw.csv
   --sample-bpf-layout MODE     Sampler layout: auto|v1|v2|legacy|current (default: auto)
   --sample-bpf-interval-us N   Sampler interval in microseconds (default: 500)
+  --output-root DIR            Output root for default raw/summary and per-run artifacts
   --output-raw PATH            raw per-run CSV (default: <mutexbench>/throughput_sweep_raw.csv)
   --output-summary PATH        aggregated CSV (default: <mutexbench>/throughput_sweep_summary.csv)
   -h, --help                   Show this help
@@ -61,11 +63,15 @@ lock_kind="mutex"
 timeslice_extension="off"
 repeats="3"
 profiling_enabled="0"
+sample_heatmap_enabled="0"
 sample_bpf_enabled="0"
 sample_bpf_layout="auto"
 sample_bpf_interval_us="500"
+output_root=""
 output_raw="$MUTEXBENCH_DIR/throughput_sweep_raw.csv"
 output_summary="$MUTEXBENCH_DIR/throughput_sweep_summary.csv"
+output_raw_explicit="0"
+output_summary_explicit="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -125,6 +131,14 @@ while [[ $# -gt 0 ]]; do
       profiling_enabled="1"
       shift
       ;;
+    --sample-heatmap)
+      if [[ $# -gt 1 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+        echo "--sample-heatmap does not take a value; use bare --sample-heatmap" >&2
+        exit 1
+      fi
+      sample_heatmap_enabled="1"
+      shift
+      ;;
     --sample-bpf)
       if [[ $# -gt 1 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
         echo "--sample-bpf does not take a value; use bare --sample-bpf" >&2
@@ -141,12 +155,18 @@ while [[ $# -gt 0 ]]; do
       sample_bpf_interval_us="${2:-}"
       shift 2
       ;;
+    --output-root)
+      output_root="${2:-}"
+      shift 2
+      ;;
     --output-raw)
       output_raw="${2:-}"
+      output_raw_explicit="1"
       shift 2
       ;;
     --output-summary)
       output_summary="${2:-}"
+      output_summary_explicit="1"
       shift 2
       ;;
     -h|--help)
@@ -348,8 +368,20 @@ parse_csv_values "$critical_iters_csv" "--critical-ns" "yes" critical_iters
 parse_csv_values "$outside_iters_csv" "--outside-ns" "yes" outside_iters
 
 binary="$(resolve_executable_path "$binary" "$MUTEXBENCH_DIR")"
+if [[ -n "$output_root" ]]; then
+  output_root="$(resolve_output_path "$output_root" "$MUTEXBENCH_DIR")"
+  if [[ "$output_raw_explicit" != "1" ]]; then
+    output_raw="$output_root/raw.csv"
+  fi
+  if [[ "$output_summary_explicit" != "1" ]]; then
+    output_summary="$output_root/summary.csv"
+  fi
+fi
 output_raw="$(resolve_output_path "$output_raw" "$MUTEXBENCH_DIR")"
 output_summary="$(resolve_output_path "$output_summary" "$MUTEXBENCH_DIR")"
+if [[ -z "$output_root" ]]; then
+  output_root="$(dirname "$output_raw")"
+fi
 if [[ -n "$bench_ld_preload" ]]; then
   bench_ld_preload="$(resolve_input_file_path "$bench_ld_preload" "$MUTEXBENCH_DIR")"
   if [[ ! -f "$bench_ld_preload" ]]; then
@@ -404,13 +436,16 @@ if [[ "$sample_bpf_enabled" == "1" ]]; then
   fi
 fi
 
-raw_output_dir="$(dirname "$output_raw")"
-mkdir -p "$raw_output_dir"
+mkdir -p "$output_root"
+mkdir -p "$(dirname "$output_raw")"
 mkdir -p "$(dirname "$output_summary")"
 
 raw_header="threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct"
 if [[ "$profiling_enabled" == "1" ]]; then
   raw_header+=",perf_data_path"
+fi
+if [[ "$sample_heatmap_enabled" == "1" ]]; then
+  raw_header+=",lock_stats_heatmap_path"
 fi
 if [[ "$sample_bpf_enabled" == "1" ]]; then
   raw_header+=",bpf_samples_path,bpf_layout,bpf_interval_us"
@@ -508,19 +543,30 @@ for t in "${threads[@]}"; do
         bench_output_path="$(mktemp)"
         pidstat_output_path="$(mktemp)"
         perf_data_path=""
+        heatmap_path=""
         bpf_samples_path=""
         bpf_sampler_pid=""
         bpf_sampler_log_path=""
+        bench_env_args=()
+
+        if [[ -n "$bench_ld_preload" ]]; then
+          bench_env_args+=("LD_PRELOAD=$bench_ld_preload")
+        fi
+        if [[ "$sample_heatmap_enabled" == "1" ]]; then
+          heatmap_path="$output_root/t${t}_c${c}_o${o}_r${r}.heatmap.csv"
+          rm -f -- "$heatmap_path"
+          bench_env_args+=("LOCK_STATS_HEATMAP_PATH=$heatmap_path")
+        fi
 
         if [[ "$profiling_enabled" == "1" ]]; then
-          perf_data_path="$raw_output_dir/t${t}_c${c}_o${o}_r${r}.perf.data"
-          if [[ -n "$bench_ld_preload" ]]; then
-            perf record -q -F 499 -e cpu-clock -o "$perf_data_path" -- env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}" >"$bench_output_path" &
+          perf_data_path="$output_root/t${t}_c${c}_o${o}_r${r}.perf.data"
+          if [[ ${#bench_env_args[@]} -gt 0 ]]; then
+            perf record -q -F 499 -e cpu-clock -o "$perf_data_path" -- env "${bench_env_args[@]}" "${bench_cmd[@]}" >"$bench_output_path" &
           else
             perf record -q -F 499 -e cpu-clock -o "$perf_data_path" -- "${bench_cmd[@]}" >"$bench_output_path" &
           fi
-        elif [[ -n "$bench_ld_preload" ]]; then
-          env LD_PRELOAD="$bench_ld_preload" "${bench_cmd[@]}" >"$bench_output_path" &
+        elif [[ ${#bench_env_args[@]} -gt 0 ]]; then
+          env "${bench_env_args[@]}" "${bench_cmd[@]}" >"$bench_output_path" &
         else
           "${bench_cmd[@]}" >"$bench_output_path" &
         fi
@@ -530,8 +576,8 @@ for t in "${threads[@]}"; do
         pidstat_pid=$!
 
         if [[ "$sample_bpf_enabled" == "1" ]]; then
-          bpf_samples_path="$raw_output_dir/t${t}_c${c}_o${o}_r${r}.bpf_samples.csv"
-          bpf_sampler_log_path="$raw_output_dir/t${t}_c${c}_o${o}_r${r}.bpf_samples.stderr"
+          bpf_samples_path="$output_root/t${t}_c${c}_o${o}_r${r}.bpf_samples.csv"
+          bpf_sampler_log_path="$output_root/t${t}_c${c}_o${o}_r${r}.bpf_samples.stderr"
           sample_duration_s="$(awk -v warmup_ms="$warmup_duration_ms" -v duration_ms="$duration_ms" 'BEGIN { printf "%.3f", (warmup_ms + duration_ms) / 1000.0 + 0.250 }')"
           sched_ext_ready="0"
           for _ in $(seq 1 80); do
@@ -609,6 +655,14 @@ for t in "${threads[@]}"; do
         if [[ "$profiling_enabled" == "1" ]]; then
           restore_output_owner_if_sudo_user "$perf_data_path"
         fi
+        if [[ "$sample_heatmap_enabled" == "1" && -n "$heatmap_path" ]]; then
+          restore_output_owner_if_sudo_user "$heatmap_path"
+          if [[ ! -s "$heatmap_path" ]]; then
+            echo "lock_stats heatmap produced no data for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
+            echo "Ensure --bench-ld-preload points at a lock_stats-enabled lb_simple library and the workload produced sampled lock operations." >&2
+            exit 1
+          fi
+        fi
         if [[ "$sample_bpf_enabled" == "1" && -n "$bpf_samples_path" ]]; then
           restore_output_owner_if_sudo_user "$bpf_samples_path" "$bpf_sampler_log_path"
           if [[ ! -s "$bpf_samples_path" ]]; then
@@ -633,6 +687,9 @@ for t in "${threads[@]}"; do
         )
         if [[ "$profiling_enabled" == "1" ]]; then
           raw_row+=("$perf_data_path")
+        fi
+        if [[ "$sample_heatmap_enabled" == "1" ]]; then
+          raw_row+=("$heatmap_path")
         fi
         if [[ "$sample_bpf_enabled" == "1" ]]; then
           raw_row+=("$bpf_samples_path" "$sample_bpf_layout" "$sample_bpf_interval_us")
