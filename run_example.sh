@@ -1,5 +1,5 @@
   ./scripts/sweep_mutex_throughput_multi_lock.sh \
-    --locks mcs,mcs-tas,flexguard,mcs_tas_simple \
+    --locks mcs,mcs-tas,flexguard,mcs_tas_accordin \
     --profile \
   --sample-bpf \
     --outside-ns 350,2800 \

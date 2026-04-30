@@ -14,8 +14,8 @@ Usage:
 
 Options:
   --binary PATH                Benchmark binary path (default: <mutexbench>/mutex_bench)
-  --lib PATH                   Prebuilt libmcs_tas_simple.so path
-                               (default: <repo>/target/release/libmcs_tas_simple.so)
+  --lib PATH                   Prebuilt libmcs_tas_accordin.so path
+                               (default: <repo>/target/release/libmcs_tas_accordin.so)
   --threads CSV                Thread counts, comma-separated (default: 32)
   --critical-ns CSV            Critical-section burn time in ns (default: 350)
   --outside-ns CSV             Non-critical-section burn time in ns (default: 350)
@@ -25,16 +25,16 @@ Options:
   --repeats N                  Runs per parameter point (default: 3)
   --perf-freq N                perf sampling frequency (default: 499)
   --sudo-mode MODE             MODE in {auto,always,none} (default: auto)
-  --disable-bpf                Set MCS_TAS_SIMPLE_DISABLE_BPF=1 for the benchmark
-  --stats-only                 Set MCS_TAS_SIMPLE_STATS_ONLY=1 for the benchmark
+  --disable-bpf                Set MCS_TAS_ACCORDIN_DISABLE_BPF=1 for the benchmark
+  --stats-only                 Set MCS_TAS_ACCORDIN_STATS_ONLY=1 for the benchmark
   --output-raw PATH            Raw per-run CSV
                                (default: <mutexbench>/results/mcs_tas_raw_perf/raw.csv)
   --output-summary PATH        Aggregated CSV
                                (default: <mutexbench>/results/mcs_tas_raw_perf/summary.csv)
   -h, --help                   Show this help
 
-The script builds mcs_tas_simple with:
-  cargo build -p mcs_tas_simple --release --features perf-symbols
+The script builds mcs_tas_accordin with:
+  cargo build -p mcs_tas_accordin --release --features perf-symbols
 
 It counts samples whose symbol matches one of:
   McsTasLockRaw::lock_slow
@@ -47,7 +47,7 @@ EOF
 }
 
 binary="$MUTEXBENCH_DIR/mutex_bench"
-lib_path="$PROJECT_ROOT/target/release/libmcs_tas_simple.so"
+lib_path="$PROJECT_ROOT/target/release/libmcs_tas_accordin.so"
 threads_csv="32"
 critical_iters_csv="350"
 outside_iters_csv="350"
@@ -350,8 +350,8 @@ if [[ ! -x "$binary" ]]; then
 fi
 
 if [[ "$lib_was_explicit" == "0" ]]; then
-  echo "Building mcs_tas_simple with release profile..." >&2
-  cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" -p mcs_tas_simple --release --features perf-symbols >/dev/null
+  echo "Building mcs_tas_accordin with release profile..." >&2
+  cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" -p mcs_tas_accordin --release --features perf-symbols >/dev/null
 fi
 
 if [[ ! -f "$lib_path" ]]; then
@@ -362,7 +362,7 @@ fi
 nm_output="$(nm -C "$lib_path" 2>/dev/null || true)"
 if ! grep -Eq 'McsTasLockRaw::(lock_slow|try_lock_fast|unlock_fast)|LockBackend>::(lock|try_lock|unlock)' <<< "$nm_output"; then
   echo "Expected McsTasLockRaw symbols not found in $lib_path" >&2
-  echo "Rebuild with: cargo build -p mcs_tas_simple --release --features perf-symbols" >&2
+  echo "Rebuild with: cargo build -p mcs_tas_accordin --release --features perf-symbols" >&2
   exit 1
 fi
 
@@ -393,10 +393,10 @@ for t in "${threads[@]}"; do
 
         bench_env=(env "LD_PRELOAD=$lib_path")
         if [[ "$disable_bpf" == "1" ]]; then
-          bench_env+=("MCS_TAS_SIMPLE_DISABLE_BPF=1")
+          bench_env+=("MCS_TAS_ACCORDIN_DISABLE_BPF=1")
         fi
         if [[ "$stats_only" == "1" ]]; then
-          bench_env+=("MCS_TAS_SIMPLE_STATS_ONLY=1")
+          bench_env+=("MCS_TAS_ACCORDIN_STATS_ONLY=1")
         fi
 
         bench_cmd=(

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Sample lb_simple BPF runtime state at a fixed interval.
+"""Sample accordin BPF runtime state at a fixed interval.
 
-This script discovers the active lb_simple sched_ext owner process, opens the
+This script discovers the active accordin sched_ext owner process, opens the
 scheduler's BPF maps, and periodically samples the scheduler's .data/.bss state.
 The default interval is 100us.
 
@@ -258,7 +258,7 @@ class MapMeta:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sample lb_simple BPF runtime maps every N microseconds."
+        description="Sample accordin BPF runtime maps every N microseconds."
     )
     parser.add_argument(
         "--interval-us",
@@ -285,8 +285,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ops-name",
-        default="lb_simple",
-        help="Expected sched_ext ops name (default: lb_simple)",
+        default="accordin",
+        help="Expected sched_ext ops name (default: accordin)",
     )
     parser.add_argument(
         "--layout",
@@ -356,7 +356,7 @@ def sys_bpf_nr() -> int:
 
 def require_root() -> None:
     if os.geteuid() != 0:
-        raise SystemExit("run as root, e.g. sudo python3 bench/mutexbench/scripts/sample_lb_simple_bpf.py ...")
+        raise SystemExit("run as root, e.g. sudo python3 bench/mutexbench/scripts/sample_accordin_bpf.py ...")
 
 
 def read_text_if_exists(path: Path) -> str:
@@ -594,16 +594,16 @@ def choose_pid_and_maps(args: argparse.Namespace) -> tuple[int, Dict[str, MapMet
         time.sleep(0.02)
 
     if args.pid is not None:
-        raise SystemExit(f"PID {args.pid} does not expose the required lb_simple .bss/.data maps")
+        raise SystemExit(f"PID {args.pid} does not expose the required accordin .bss/.data maps")
 
     if not last_owner_pids:
         raise SystemExit(
             "no sched_ext owner PID was found via bpftool struct_ops show, "
-            "and global map discovery did not find lb_simple .bss/.data maps"
+            "and global map discovery did not find accordin .bss/.data maps"
         )
 
     raise SystemExit(
-        "found sched_ext owner PID(s), but none exposed the required lb_simple .bss/.data maps"
+        "found sched_ext owner PID(s), but none exposed the required accordin .bss/.data maps"
     )
 
 
@@ -1001,7 +1001,7 @@ def main() -> int:
 
     log(
         (
-            f"[sample_lb_simple_bpf] owner_pid={owner_pid} interval_us={args.interval_us} "
+            f"[sample_accordin_bpf] owner_pid={owner_pid} interval_us={args.interval_us} "
             f"layout={layout.name} maps={','.join(sorted(maps))} output={args.output}"
         ),
         args.quiet,
@@ -1033,7 +1033,7 @@ def main() -> int:
             next_deadline_ns += interval_ns
             poll_until(next_deadline_ns)
     except KeyboardInterrupt:
-        log("[sample_lb_simple_bpf] interrupted", args.quiet)
+        log("[sample_accordin_bpf] interrupted", args.quiet)
     finally:
         for meta in maps.values():
             try:

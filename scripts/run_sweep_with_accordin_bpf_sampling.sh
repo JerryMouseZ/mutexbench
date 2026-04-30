@@ -7,18 +7,18 @@ SCHED_EXT_OPS="/sys/kernel/sched_ext/root/ops"
 
 usage() {
   cat <<'EOF'
-Run a sweep command and capture lb_simple BPF samples in parallel.
+Run a sweep command and capture accordin BPF samples in parallel.
 
 Usage:
-  sudo scripts/run_sweep_with_lb_simple_bpf_sampling.sh [launcher-options] -- <sweep-command> [args...]
+  sudo scripts/run_sweep_with_accordin_bpf_sampling.sh [launcher-options] -- <sweep-command> [args...]
 
 Launcher options:
   --interval-us N          Sampler interval in microseconds (default: 100)
-  --sampler-output PATH    CSV path for sampler output (default: ./lb_simple_bpf_samples.csv)
+  --sampler-output PATH    CSV path for sampler output (default: ./accordin_bpf_samples.csv)
   --sampler-log PATH       Log path for sampler stderr/stdout (default: <sampler-output>.log)
-  --sampler-script PATH    Sampler script path (default: scripts/sample_lb_simple_bpf.py)
-  --ops-name NAME          Expected sched_ext ops name (default: lb_simple)
-  --wait-timeout-s N       Seconds to wait for lb_simple to attach (default: 30)
+  --sampler-script PATH    Sampler script path (default: scripts/sample_accordin_bpf.py)
+  --ops-name NAME          Expected sched_ext ops name (default: accordin)
+  --wait-timeout-s N       Seconds to wait for accordin to attach (default: 30)
   --poll-interval-ms N     Poll interval while waiting for sched_ext (default: 20)
   --include-agg            Pass --include-agg to the sampler
   --include-stats-map      Pass --include-stats-map to the sampler
@@ -29,9 +29,9 @@ Launcher options:
 Everything after -- is executed as the sweep command.
 
 Example:
-  sudo scripts/run_sweep_with_lb_simple_bpf_sampling.sh \
+  sudo scripts/run_sweep_with_accordin_bpf_sampling.sh \
     --interval-us 100 \
-    --sampler-output /tmp/lb_simple_bpf.csv \
+    --sampler-output /tmp/accordin_bpf.csv \
     --include-agg \
     --include-slots \
     -- \
@@ -39,7 +39,7 @@ Example:
       --threads 32 --critical-ns 350 --outside-ns 350 \
       --duration-ms 3000 --warmup-duration-ms 1000 --repeats 3 \
       --timeslice-extension off \
-      --bench-ld-preload target/release/liblb_simple.so \
+      --bench-ld-preload target/release/libaccordin.so \
       --lock-kind mutex \
       --output-raw /tmp/lb_raw.csv \
       --output-summary /tmp/lb_summary.csv
@@ -115,10 +115,10 @@ cleanup() {
 }
 
 interval_us=100
-sampler_output="./lb_simple_bpf_samples.csv"
+sampler_output="./accordin_bpf_samples.csv"
 sampler_log=""
-sampler_script="$SCRIPT_DIR/sample_lb_simple_bpf.py"
-ops_name="lb_simple"
+sampler_script="$SCRIPT_DIR/sample_accordin_bpf.py"
+ops_name="accordin"
 wait_timeout_s=30
 poll_interval_ms=20
 include_agg=0

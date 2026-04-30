@@ -30,7 +30,7 @@ Options:
   --repeats N                  runs per parameter point (default: 3)
   --profile                    Record perf.data for each run and keep it beside raw.csv
   --sample-heatmap             Record per-run lock_stats heatmap CSV beside raw.csv
-  --sample-bpf                 Record per-run lb_simple BPF sampler CSV beside raw.csv
+  --sample-bpf                 Record per-run accordin BPF sampler CSV beside raw.csv
   --sample-bpf-layout MODE     Sampler layout: auto|v1|v2|legacy|current (default: auto)
   --sample-bpf-interval-us N   Sampler interval in microseconds (default: 500)
   --output-root DIR            Output root for default raw/summary and per-run artifacts
@@ -408,7 +408,7 @@ if [[ "$profiling_enabled" == "1" ]] && ! command -v perf >/dev/null 2>&1; then
   echo "perf not found in PATH" >&2
   exit 1
 fi
-sample_bpf_script="$SCRIPT_DIR/sample_lb_simple_bpf.py"
+sample_bpf_script="$SCRIPT_DIR/sample_accordin_bpf.py"
 if [[ "$sample_bpf_enabled" == "1" ]]; then
   if ! is_uint "$sample_bpf_interval_us" || [[ "$sample_bpf_interval_us" -le 0 ]]; then
     echo "--sample-bpf-interval-us must be a positive integer" >&2
@@ -659,7 +659,7 @@ for t in "${threads[@]}"; do
           restore_output_owner_if_sudo_user "$heatmap_path"
           if [[ ! -s "$heatmap_path" ]]; then
             echo "lock_stats heatmap produced no data for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
-            echo "Ensure --bench-ld-preload points at a lock_stats-enabled lb_simple library and the workload produced sampled lock operations." >&2
+            echo "Ensure --bench-ld-preload points at a lock_stats-enabled accordin library and the workload produced sampled lock operations." >&2
             exit 1
           fi
         fi

@@ -19,7 +19,7 @@ curve_bench
 .DS_Store
 Thumbs.db
 
-run_simple.sh
+run_accordin.sh
 .cache
 compile_commands.json
 .claude/worktrees
