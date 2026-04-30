@@ -2,6 +2,7 @@ CXX ?= g++
 CPPFLAGS ?=
 CXXFLAGS ?= -O3 -std=c++20 -pthread
 LDFLAGS ?=
+LDLIBS ?= -ldl
 
 TARGETS := mutex_bench curve_bench
 DEPFILES := $(TARGETS:%=%.d)
@@ -14,10 +15,10 @@ all: $(TARGETS)
 -include $(DEPFILES)
 
 mutex_bench: mutex_bench.cpp
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) $< -o $@ $(LDFLAGS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
 curve_bench: curve_bench.cpp
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) $< -o $@ $(LDFLAGS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
 clean:
 	rm -f $(TARGETS) $(DEPFILES)

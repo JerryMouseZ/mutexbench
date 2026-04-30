@@ -24,6 +24,9 @@ Options:
   --critical-iters CSV         Legacy alias for --critical-ns
   --duration-ms N              measurement duration in ms (default: 1000)
   --warmup-duration-ms N       warmup duration in ms (default: 0)
+  --warmup-convergence-timeout-ms N
+                               extra warmup wait for optional dynamic affinity convergence
+                               hook before measurement (default: 30000; 0 disables timeout)
   --timing-sample-stride N     timing sample stride (default: 8)
   --lock-kind K                lock kind: mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh (default: mutex)
   --timeslice-extension M      off|auto|require (default: off; ignored for *-tse lock kinds)
@@ -58,6 +61,7 @@ critical_iters_csv="10,50,100,200,500,1000,2000"
 outside_iters_csv="10,50,100,200,500,1000,2000"
 duration_ms="2000"
 warmup_duration_ms="50"
+warmup_convergence_timeout_ms="30000"
 timing_sample_stride="8"
 lock_kind="mutex"
 timeslice_extension="off"
@@ -105,6 +109,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --warmup-duration-ms)
       warmup_duration_ms="${2:-}"
+      shift 2
+      ;;
+    --warmup-convergence-timeout-ms)
+      warmup_convergence_timeout_ms="${2:-}"
       shift 2
       ;;
     --timing-sample-stride)
@@ -444,9 +452,6 @@ raw_header="threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,e
 if [[ "$profiling_enabled" == "1" ]]; then
   raw_header+=",perf_data_path"
 fi
-if [[ "$sample_heatmap_enabled" == "1" ]]; then
-  raw_header+=",lock_stats_heatmap_path"
-fi
 if [[ "$sample_bpf_enabled" == "1" ]]; then
   raw_header+=",bpf_samples_path,bpf_layout,bpf_interval_us"
 fi
@@ -519,6 +524,7 @@ for t in "${threads[@]}"; do
           --lock-kind "$lock_kind"
           --duration-ms "$duration_ms"
           --warmup-duration-ms "$warmup_duration_ms"
+          --warmup-convergence-timeout-ms "$warmup_convergence_timeout_ms"
           --critical-ns "$c"
           --outside-ns "$o"
           --timing-sample-stride "$timing_sample_stride"
@@ -687,9 +693,6 @@ for t in "${threads[@]}"; do
         )
         if [[ "$profiling_enabled" == "1" ]]; then
           raw_row+=("$perf_data_path")
-        fi
-        if [[ "$sample_heatmap_enabled" == "1" ]]; then
-          raw_row+=("$heatmap_path")
         fi
         if [[ "$sample_bpf_enabled" == "1" ]]; then
           raw_row+=("$bpf_samples_path" "$sample_bpf_layout" "$sample_bpf_interval_us")
