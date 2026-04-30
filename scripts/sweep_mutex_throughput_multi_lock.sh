@@ -36,13 +36,14 @@ Options:
                                   resolved as $FLEXGUARD_DIR/build/interpose_<name>.sh
                                7) mcs_simple (run benchmark with LD_PRELOAD=libmcs_simple.so)
                                8) mcs_simple_no_bpf (same as mcs_simple with MCS_SIMPLE_DISABLE_BPF=1)
-                              9) mcs_tas_simple (run benchmark with LD_PRELOAD=libmcs_tas_simple.so)
-                             10) mcs_tas_simple_no_bpf (same as mcs_tas_simple with MCS_TAS_SIMPLE_DISABLE_BPF=1)
-                             11) ttas_simple (run benchmark with LD_PRELOAD=libttas_simple.so)
-                             12) ttas_simple_no_bpf (same as ttas_simple with TTAS_SIMPLE_DISABLE_BPF=1)
-                             13) reciprocating_simple (run benchmark with LD_PRELOAD=libreciprocating_simple.so)
-                             14) reciprocating_simple_no_bpf (same as reciprocating_simple with RECIPROCATING_SIMPLE_DISABLE_BPF=1)
-                             15) flexguard_simple (run benchmark with LD_PRELOAD=libflexguard.so)
+                               9) mcs_tse (run benchmark with LD_PRELOAD=libmcs_tse.so)
+                              10) mcs_tas_simple (run benchmark with LD_PRELOAD=libmcs_tas_simple.so)
+                              11) mcs_tas_simple_no_bpf (same as mcs_tas_simple with MCS_TAS_SIMPLE_DISABLE_BPF=1)
+                              12) ttas_simple (run benchmark with LD_PRELOAD=libttas_simple.so)
+                              13) ttas_simple_no_bpf (same as ttas_simple with TTAS_SIMPLE_DISABLE_BPF=1)
+                              14) reciprocating_simple (run benchmark with LD_PRELOAD=libreciprocating_simple.so)
+                              15) reciprocating_simple_no_bpf (same as reciprocating_simple with RECIPROCATING_SIMPLE_DISABLE_BPF=1)
+                              16) flexguard_simple (run benchmark with LD_PRELOAD=libflexguard.so)
                              Name conflict rule:
                                - Builtin names always run as native locks.
                                - To run external lock with a builtin-like name,
@@ -57,6 +58,10 @@ Options:
                                2) else <repo>/target/<profile>/libmcs_tas_simple.so
                                3) else <repo>/target/release/libmcs_tas_simple.so
                                4) else <repo>/target/debug/libmcs_tas_simple.so
+                             For mcs_tse library path:
+                               1) use $MCS_TSE_LIB if set
+                               2) else <repo>/target/release/libmcs_tse.so
+                               3) else <repo>/target/debug/libmcs_tse.so
                              For ttas_simple library path:
                                1) use $TTAS_SIMPLE_LIB if set
                                2) else <repo>/target/<profile>/libttas_simple.so
@@ -213,6 +218,13 @@ resolve_mcs_tas_simple_lib_path() {
     "MCS_TAS_SIMPLE_LIB" \
     "$PROJECT_ROOT/target/release/libmcs_tas_simple.so" \
     "$PROJECT_ROOT/target/debug/libmcs_tas_simple.so"
+}
+
+resolve_mcs_tse_lib_path() {
+  resolve_preload_lib_path \
+    "MCS_TSE_LIB" \
+    "$PROJECT_ROOT/target/release/libmcs_tse.so" \
+    "$PROJECT_ROOT/target/debug/libmcs_tse.so"
 }
 
 resolve_ttas_simple_lib_path() {
@@ -887,6 +899,7 @@ for item in "${lock_items[@]}"; do
   lock_kind="hook"
   bench_lock_kind=""
   mcs_simple_lib=""
+  mcs_tse_lib=""
   mcs_tas_simple_lib=""
   ttas_simple_lib=""
   reciprocating_simple_lib=""
@@ -929,6 +942,11 @@ for item in "${lock_items[@]}"; do
         lock_name="mcs_simple_no_bpf"
         lock_script=""
         mcs_simple_disable_bpf="1"
+        ;;
+      mcs_tse)
+        lock_kind="mcs_tse"
+        lock_name="mcs_tse"
+        lock_script=""
         ;;
       mcs_tas_simple)
         lock_kind="mcs_tas_simple"
@@ -1023,6 +1041,13 @@ for item in "${lock_items[@]}"; do
     if [[ ! -f "$mcs_simple_lib" ]]; then
       echo "mcs_simple library not found: $mcs_simple_lib" >&2
       echo "Build first (cargo build -p mcs_simple --release) or set MCS_SIMPLE_LIB to libmcs_simple.so path." >&2
+      exit 1
+    fi
+  elif [[ "$lock_kind" == "mcs_tse" ]]; then
+    mcs_tse_lib="$(resolve_mcs_tse_lib_path)"
+    if [[ ! -f "$mcs_tse_lib" && "$dry_run" != "1" ]]; then
+      echo "mcs_tse library not found: $mcs_tse_lib" >&2
+      echo "Build first (cargo build -p mcs_tse --release) or set MCS_TSE_LIB to libmcs_tse.so path." >&2
       exit 1
     fi
   elif [[ "$lock_kind" == "mcs_tas_simple" ]]; then
@@ -1151,6 +1176,15 @@ for item in "${lock_items[@]}"; do
     else
       cmd=(env "${lb_simple_env_args[@]}" "MCS_SIMPLE_DEBUG_COUNTERS=${MCS_SIMPLE_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
+  elif [[ "$lock_kind" == "mcs_tse" ]]; then
+    cmd=(
+      "$sweep_script"
+      "${sweep_args[@]}"
+      --bench-ld-preload "$mcs_tse_lib"
+      --lock-kind "mutex"
+      --output-raw "$raw_out"
+      --output-summary "$summary_out"
+    )
   elif [[ "$lock_kind" == "mcs_tas_simple" ]]; then
     cmd=(
       "$sweep_script"

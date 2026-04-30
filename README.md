@@ -8,7 +8,7 @@
 - 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`mcs-tas-tse`、`mcstas-next`、`mcstas-next-tse`、`twa`、`clh`
 - 指标输出：吞吐量、锁内持有时间、平均等待时间近似、解锁到下一次加锁时间估计
 - 扫频脚本：自动生成 `raw.csv`（逐次运行）与 `summary.csv`（聚合统计）
-- 多锁对比：支持内置锁、外部 interpose 脚本、`mcs_tas_simple` / `ttas_simple` 预加载模式
+- 多锁对比：支持内置锁、外部 interpose 脚本、`mcs_tse` / `mcs_tas_simple` / `ttas_simple` 预加载模式
 - Python 工具：多锁统计分析、线程推荐、吞吐量曲线图批量生成
 
 ## 目录结构
@@ -163,6 +163,7 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - 内置锁名（如 `mutex,mcs,clh`）
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
+- `mcs_tse`（通过 `LD_PRELOAD=target/release/libmcs_tse.so` 运行 `mutex` lock kind；可用 `MCS_TSE_LIB` 覆盖库路径，默认按 `target/release`、`target/debug` 查找；不启用 sched_ext 冲突处理或 BPF sampler）
 - `mcs_tas_simple`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
 - `mcs_tas_simple_no_bpf`（通过 `LD_PRELOAD=target/release/libmcs_tas_simple.so`，并设置 `MCS_TAS_SIMPLE_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
 - `ttas_simple`（通过 `LD_PRELOAD=target/release/libttas_simple.so`；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
