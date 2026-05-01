@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <dlfcn.h>
 #include <iomanip>
 #if defined(__x86_64__) || defined(__i386__)
 #include <emmintrin.h>
@@ -39,7 +38,6 @@ struct Config {
   int threads = 4;
   uint64_t duration_ms = 1000;
   uint64_t warmup_duration_ms = 0;
-  uint64_t warmup_convergence_timeout_ms = 30000;
   uint64_t critical_ns = 100;
   uint64_t outside_ns = 100;
   uint64_t timing_sample_stride = 8;
@@ -57,7 +55,6 @@ struct Config {
   std::cerr
       << "Usage: " << prog
       << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
-      << " [--warmup-convergence-timeout-ms N]"
       << " [--critical-ns N] [--outside-ns N] [--timing-sample-stride "
          "N] [--lock-kind mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|"
          "mcstas-next|mcstas-next-tse|twa|clh]"
@@ -67,9 +64,6 @@ struct Config {
          "1000)\n"
       << "  --warmup-duration-ms N  Warmup duration in milliseconds (default: "
          "0)\n"
-      << "  --warmup-convergence-timeout-ms N  Extra warmup wait for optional "
-         "dynamic affinity convergence hook (default: 30000; 0 disables "
-         "timeout)\n"
       << "  --critical-ns N   Requested critical-section burn time in "
          "nanoseconds (default: 100)\n"
       << "  --outside-ns N    Requested non-critical-section burn time in "
@@ -122,10 +116,6 @@ Config ParseArgs(int argc, char *argv[]) {
     } else if (arg == "--warmup-duration-ms") {
       cfg.warmup_duration_ms =
           ParseU64(need_next("--warmup-duration-ms"), "--warmup-duration-ms");
-    } else if (arg == "--warmup-convergence-timeout-ms") {
-      cfg.warmup_convergence_timeout_ms =
-          ParseU64(need_next("--warmup-convergence-timeout-ms"),
-                   "--warmup-convergence-timeout-ms");
     } else if (arg == "--critical-ns" || arg == "--critical-iters") {
       cfg.critical_ns =
           ParseU64(need_next("--critical-ns"), "--critical-ns");
@@ -239,67 +229,6 @@ inline void BurnIters(uint64_t iters,
   }
 }
 
-using DynamicCpuAffinityStableFn = int (*)();
-using DynamicCpuAffinityFreezeFn = void (*)();
-using DynamicCpuAffinityBeginMeasurementFn = void (*)();
-
-DynamicCpuAffinityStableFn ResolveDynamicCpuAffinityStableHook() {
-  dlerror();
-  void *symbol = dlsym(RTLD_DEFAULT, "lb_simple_dynamic_cpu_affinity_is_stable");
-  if (symbol == nullptr) {
-    return nullptr;
-  }
-  return reinterpret_cast<DynamicCpuAffinityStableFn>(symbol);
-}
-
-DynamicCpuAffinityFreezeFn ResolveDynamicCpuAffinityFreezeHook() {
-  dlerror();
-  void *symbol = dlsym(RTLD_DEFAULT, "lb_simple_dynamic_cpu_affinity_freeze");
-  if (symbol == nullptr) {
-    return nullptr;
-  }
-  return reinterpret_cast<DynamicCpuAffinityFreezeFn>(symbol);
-}
-
-DynamicCpuAffinityBeginMeasurementFn
-ResolveDynamicCpuAffinityBeginMeasurementHook() {
-  dlerror();
-  void *symbol =
-      dlsym(RTLD_DEFAULT, "lb_simple_dynamic_cpu_affinity_begin_measurement");
-  if (symbol == nullptr) {
-    return nullptr;
-  }
-  return reinterpret_cast<DynamicCpuAffinityBeginMeasurementFn>(symbol);
-}
-
-bool WaitForDynamicCpuAffinityConvergence(DynamicCpuAffinityStableFn is_stable,
-                                          uint64_t timeout_ms,
-                                          uint64_t *waited_ms) {
-  if (waited_ms != nullptr) {
-    *waited_ms = 0;
-  }
-  if (is_stable == nullptr) {
-    return true;
-  }
-  const auto start = Clock::now();
-  while (is_stable() == 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (timeout_ms == 0) {
-      continue;
-    }
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             Clock::now() - start)
-                             .count();
-    if (waited_ms != nullptr) {
-      *waited_ms = static_cast<uint64_t>(elapsed);
-    }
-    if (elapsed >= static_cast<int64_t>(timeout_ms)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   static_assert(locks_bench::LockBench<LockBenchT>);
 
@@ -309,88 +238,43 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
   std::atomic<uint64_t> total_lock_hold_ns{0};
   std::atomic<uint64_t> total_lock_hold_samples{0};
   std::atomic<uint64_t> total_thread_elapsed_ns{0};
-  const auto dynamic_cpu_stable_hook = ResolveDynamicCpuAffinityStableHook();
-  const auto dynamic_cpu_freeze_hook = ResolveDynamicCpuAffinityFreezeHook();
-  const auto dynamic_cpu_begin_measurement_hook =
-      ResolveDynamicCpuAffinityBeginMeasurementHook();
-
-  if (cfg.warmup_duration_ms > 0) {
-    std::atomic<int> warmup_ready{0};
-    std::atomic<bool> warmup_start{false};
-    std::atomic<bool> warmup_stop{false};
-    std::vector<std::thread> warmup_workers;
-    warmup_workers.reserve(static_cast<size_t>(cfg.threads));
-
-    for (int t = 0; t < cfg.threads; ++t) {
-      warmup_workers.emplace_back([&]() {
-        lock_bench.prepare_thread();
-        warmup_ready.fetch_add(1, std::memory_order_release);
-        while (!warmup_start.load(std::memory_order_acquire)) {
-          std::this_thread::yield();
-        }
-
-        while (!warmup_stop.load(std::memory_order_acquire)) {
-          auto guard_state = lock_bench.lock();
-          BurnIters(cfg.critical_ns, cfg.burn_calibration);
-          lock_bench.unlock(guard_state);
-          BurnIters(cfg.outside_ns, cfg.burn_calibration);
-        }
-      });
-    }
-
-    while (warmup_ready.load(std::memory_order_acquire) < cfg.threads) {
-      std::this_thread::sleep_for(std::chrono::microseconds(50));
-    }
-
-    warmup_start.store(true, std::memory_order_release);
-    std::this_thread::sleep_for(
-        std::chrono::milliseconds(cfg.warmup_duration_ms));
-    uint64_t convergence_wait_ms = 0;
-    if (!WaitForDynamicCpuAffinityConvergence(dynamic_cpu_stable_hook,
-                                              cfg.warmup_convergence_timeout_ms,
-                                              &convergence_wait_ms)) {
-      warmup_stop.store(true, std::memory_order_release);
-      for (auto &th : warmup_workers) {
-        th.join();
-      }
-      std::cerr << "Timed out waiting for dynamic CPU affinity convergence "
-                   "after warmup (timeout_ms="
-                << cfg.warmup_convergence_timeout_ms << ")\n";
-      return 2;
-    }
-    if (dynamic_cpu_stable_hook != nullptr && convergence_wait_ms != 0) {
-      std::cerr << "Dynamic CPU affinity converged after extra warmup "
-                << convergence_wait_ms << " ms\n";
-    }
-    if (dynamic_cpu_freeze_hook != nullptr) {
-      dynamic_cpu_freeze_hook();
-    }
-    warmup_stop.store(true, std::memory_order_release);
-    for (auto &th : warmup_workers) {
-      th.join();
-    }
-  }
-
-  std::atomic<int> measure_ready{0};
-  std::atomic<bool> timed_start{false};
+  std::atomic<int> workers_ready{0};
+  std::atomic<int> warmup_done{0};
+  std::atomic<bool> warmup_start{false};
+  std::atomic<bool> warmup_stop{false};
+  std::atomic<bool> measure_start{false};
   std::atomic<bool> measure_stop{false};
+
   std::vector<std::thread> workers;
   workers.reserve(static_cast<size_t>(cfg.threads));
 
   for (int t = 0; t < cfg.threads; ++t) {
     workers.emplace_back([&, thread_index = t]() {
       lock_bench.prepare_thread();
-      if (dynamic_cpu_begin_measurement_hook != nullptr) {
-        dynamic_cpu_begin_measurement_hook();
-      }
-      measure_ready.fetch_add(1, std::memory_order_release);
-      while (!timed_start.load(std::memory_order_acquire)) {
-        SpinPause();
-      }
 
       uint64_t local_lock_hold_ns = 0;
       uint64_t local_lock_hold_samples = 0;
       uint64_t local_ops = 0;
+
+      workers_ready.fetch_add(1, std::memory_order_release);
+      while (!warmup_start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+
+      if (cfg.warmup_duration_ms > 0) {
+        while (!warmup_stop.load(std::memory_order_acquire)) {
+          auto guard_state = lock_bench.lock();
+          BurnIters(cfg.critical_ns, cfg.burn_calibration);
+          lock_bench.unlock(guard_state);
+          BurnIters(cfg.outside_ns, cfg.burn_calibration);
+        }
+      }
+
+      warmup_done.fetch_add(1, std::memory_order_release);
+      while (!measure_start.load(std::memory_order_acquire)) {
+        SpinPause();
+      }
+
       const auto thread_measure_start = Clock::now();
       uint64_t sample_countdown =
           static_cast<uint64_t>(thread_index) % cfg.timing_sample_stride;
@@ -444,12 +328,23 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
     });
   }
 
-  while (measure_ready.load(std::memory_order_acquire) < cfg.threads) {
+  while (workers_ready.load(std::memory_order_acquire) < cfg.threads) {
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
+  }
+
+  warmup_start.store(true, std::memory_order_release);
+  if (cfg.warmup_duration_ms > 0) {
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(cfg.warmup_duration_ms));
+    warmup_stop.store(true, std::memory_order_release);
+  }
+
+  while (warmup_done.load(std::memory_order_acquire) < cfg.threads) {
     std::this_thread::sleep_for(std::chrono::microseconds(50));
   }
 
   const auto start = Clock::now();
-  timed_start.store(true, std::memory_order_release);
+  measure_start.store(true, std::memory_order_release);
   std::this_thread::sleep_for(std::chrono::milliseconds(cfg.duration_ms));
   measure_stop.store(true, std::memory_order_release);
 
