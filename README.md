@@ -198,7 +198,7 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - 可选：`perf_data_path`（启用 `--profile` 时）
 - 可选：`bpf_samples_path`、`bpf_layout`、`bpf_interval_us`（启用 `--sample-bpf` 时）
 
-其中 `avg_cpu_pct` 表示该次运行的 steady `%CPU` 均值：若同一 PID 有多条 `pidstat` 样本，则丢弃首条样本后再取平均；若只有一条样本，则直接使用该样本。
+其中 `avg_cpu_pct` 表示该次运行的 steady `%CPU` 均值：脚本从该 PID 的 `pidstat` 输出中取最后 `duration-ms` 对应的样本窗口再求平均，以避免把启动、预热前等待或退出清理阶段计入稳态 CPU 使用率。
 
 启用 `--sample-bpf` 时，每次运行会在 `raw.csv` 同目录额外生成一个 `t*_c*_o*_r*.bpf_samples.csv`，用于后续分析 accordin 控制面趋势。
 

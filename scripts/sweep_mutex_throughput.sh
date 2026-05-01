@@ -447,8 +447,9 @@ extract_metric() {
 
 extract_avg_cpu_pct() {
   local pidstat_output_path="$1"
+  local steady_duration_ms="$2"
 
-  awk '
+  awk -v steady_duration_ms="$steady_duration_ms" '
     function is_float(value) {
       return value ~ /^-?[0-9]+([.][0-9]+)?$/
     }
@@ -475,8 +476,15 @@ extract_avg_cpu_pct() {
     END {
       total = 0.0
       kept = 0
+      steady_samples = int((steady_duration_ms + 999) / 1000)
+      if (steady_samples < 1) {
+        steady_samples = 1
+      }
       for (pid in counts) {
-        start = (counts[pid] > 1) ? 2 : 1
+        start = counts[pid] - steady_samples + 1
+        if (start < 1) {
+          start = 1
+        }
         for (i = start; i <= counts[pid]; ++i) {
           total += samples[pid SUBSEP i]
           kept += 1
@@ -533,11 +541,16 @@ for t in "${threads[@]}"; do
         bpf_samples_path=""
         bpf_sampler_pid=""
         bpf_sampler_log_path=""
+        bench_start_ns=""
+        bench_end_ns=""
+        bench_wall_seconds=""
+        pidstat_saved_path=""
         bench_env_args=()
 
         if [[ -n "$bench_ld_preload" ]]; then
           bench_env_args+=("LD_PRELOAD=$bench_ld_preload")
         fi
+        bench_start_ns="$(date +%s%N)"
         if [[ "$profiling_enabled" == "1" ]]; then
           perf_data_path="$output_root/t${t}_c${c}_o${o}_r${r}.perf.data"
           if [[ ${#bench_env_args[@]} -gt 0 ]]; then
@@ -588,6 +601,8 @@ for t in "${threads[@]}"; do
         else
           bench_status=$?
         fi
+        bench_end_ns="$(date +%s%N)"
+        bench_wall_seconds="$(awk -v start="$bench_start_ns" -v end="$bench_end_ns" 'BEGIN { printf "%.6f", (end - start) / 1000000000.0 }')"
 
         kill "$pidstat_pid" >/dev/null 2>&1 || true
         wait "$pidstat_pid" >/dev/null 2>&1 || true
@@ -623,11 +638,20 @@ for t in "${threads[@]}"; do
         avg_lock_handoff_ns_estimated="$(extract_metric "$bench_output" "avg_lock_handoff_ns_estimated")"
         lock_hold_samples="$(extract_metric "$bench_output" "lock_hold_samples")"
 
-        if ! avg_cpu_pct="$(extract_avg_cpu_pct "$pidstat_output_path")"; then
+        if ! avg_cpu_pct="$(extract_avg_cpu_pct "$pidstat_output_path" "$duration_ms")"; then
           echo "Failed to parse steady CPU samples for threads=${t} critical=${c} outside=${o} repeat=${r}; ensure pidstat emitted at least one sample" >&2
           cat "$pidstat_output_path" >&2
           rm -f -- "$bench_output_path" "$pidstat_output_path"
           exit 1
+        fi
+        echo "avg_cpu_pct: threads=${t} critical=${c} outside=${o} repeat=${r} value=${avg_cpu_pct}" >&2
+        echo "bench_wall_seconds: threads=${t} critical=${c} outside=${o} repeat=${r} value=${bench_wall_seconds} hot_elapsed=${elapsed_seconds}" >&2
+
+        if [[ "${MUTEXBENCH_KEEP_PIDSTAT:-0}" == "1" ]]; then
+          pidstat_saved_path="$output_root/t${t}_c${c}_o${o}_r${r}.pidstat.txt"
+          cp "$pidstat_output_path" "$pidstat_saved_path"
+          restore_output_owner_if_sudo_user "$pidstat_saved_path"
+          echo "Pidstat output: $pidstat_saved_path" >&2
         fi
 
         rm -f -- "$bench_output_path" "$pidstat_output_path"
@@ -711,6 +735,12 @@ awk -F',' '
 ' "$output_raw" | sort -t',' -k1,1n -k2,2n -k3,3n > "$output_summary"
 
 restore_output_owner_if_sudo_user "$output_raw" "$output_summary"
+
+awk -F',' '
+  NR > 1 {
+    printf "summary_avg_cpu_pct: threads=%s critical=%s outside=%s repeats=%s value=%s\n", $1, $2, $3, $4, $12
+  }
+' "$output_summary" >&2
 
 echo "Raw results: $output_raw" >&2
 echo "Summary results: $output_summary" >&2
