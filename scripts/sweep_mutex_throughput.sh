@@ -434,9 +434,6 @@ raw_header="threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,e
 if [[ "$profiling_enabled" == "1" ]]; then
   raw_header+=",perf_data_path"
 fi
-if [[ "$sample_heatmap_enabled" == "1" ]]; then
-  raw_header+=",lock_stats_heatmap_path"
-fi
 if [[ "$sample_bpf_enabled" == "1" ]]; then
   raw_header+=",bpf_samples_path,bpf_layout,bpf_interval_us"
 fi
@@ -662,9 +659,6 @@ for t in "${threads[@]}"; do
         )
         if [[ "$profiling_enabled" == "1" ]]; then
           raw_row+=("$perf_data_path")
-        fi
-        if [[ "$sample_heatmap_enabled" == "1" ]]; then
-          raw_row+=("$heatmap_path")
         fi
         if [[ "$sample_bpf_enabled" == "1" ]]; then
           raw_row+=("$bpf_samples_path" "$sample_bpf_layout" "$sample_bpf_interval_us")
