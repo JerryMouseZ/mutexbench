@@ -43,7 +43,6 @@ Options:
                               13) ttas_accordin_no_bpf (same as ttas_accordin with TTAS_ACCORDIN_DISABLE_BPF=1)
                               14) reciprocating_accordin (run benchmark with LD_PRELOAD=libreciprocating_accordin.so)
                               15) reciprocating_accordin_no_bpf (same as reciprocating_accordin with RECIPROCATING_ACCORDIN_DISABLE_BPF=1)
-                              16) flexguard_accordin (run benchmark with LD_PRELOAD=libflexguard.so)
                              Name conflict rule:
                                - Builtin names always run as native locks.
                                - To run external lock with a builtin-like name,
@@ -72,11 +71,6 @@ Options:
                                2) else <repo>/target/<profile>/libreciprocating_accordin.so
                                3) else <repo>/target/release/libreciprocating_accordin.so
                                4) else <repo>/target/debug/libreciprocating_accordin.so
-                             For flexguard_accordin library path:
-                               1) use $FLEXGUARD_ACCORDIN_LIB if set
-                               2) else <repo>/target/<profile>/libflexguard.so
-                               3) else <repo>/target/release/libflexguard.so
-                               4) else <repo>/target/debug/libflexguard.so
   --sweep-script PATH        Sweep script to run (default: <mutexbench>/scripts/sweep_mutex_throughput.sh)
   --output-root DIR          Output root directory (default: <mutexbench>/results)
   --profile                  Enable perf profiling and preserve perf.data beside raw.csv
@@ -239,13 +233,6 @@ resolve_reciprocating_accordin_lib_path() {
     "RECIPROCATING_ACCORDIN_LIB" \
     "$PROJECT_ROOT/target/release/libreciprocating_accordin.so" \
     "$PROJECT_ROOT/target/debug/libreciprocating_accordin.so"
-}
-
-resolve_flexguard_accordin_lib_path() {
-  resolve_preload_lib_path \
-    "FLEXGUARD_ACCORDIN_LIB" \
-    "$PROJECT_ROOT/target/release/libflexguard.so" \
-    "$PROJECT_ROOT/target/debug/libflexguard.so"
 }
 
 resolve_flexguard_short_lock_script() {
@@ -903,7 +890,6 @@ for item in "${lock_items[@]}"; do
   mcs_tas_accordin_lib=""
   ttas_accordin_lib=""
   reciprocating_accordin_lib=""
-  flexguard_accordin_lib=""
   mcs_accordin_disable_bpf="0"
   mcs_tas_accordin_disable_bpf="0"
   ttas_accordin_disable_bpf="0"
@@ -980,11 +966,6 @@ for item in "${lock_items[@]}"; do
         lock_name="reciprocating_accordin_no_bpf"
         lock_script=""
         reciprocating_accordin_disable_bpf="1"
-        ;;
-      flexguard_accordin)
-        lock_kind="flexguard_accordin"
-        lock_name="flexguard_accordin"
-        lock_script=""
         ;;
       *)
         if is_builtin_lock_kind "$item"; then
@@ -1083,17 +1064,6 @@ for item in "${lock_items[@]}"; do
       echo "Build first (cargo build -p reciprocating_accordin --release) or set RECIPROCATING_ACCORDIN_LIB to libreciprocating_accordin.so path." >&2
       exit 1
     fi
-  elif [[ "$lock_kind" == "flexguard_accordin" ]]; then
-    if [[ "$with_scx_lavd" == "1" ]]; then
-      echo "lock=${lock_name} cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
-      exit 1
-    fi
-    flexguard_accordin_lib="$(resolve_flexguard_accordin_lib_path)"
-    if [[ ! -f "$flexguard_accordin_lib" ]]; then
-      echo "flexguard_accordin library not found: $flexguard_accordin_lib" >&2
-      echo "Build first (cargo build -p libflexguard --release) or set FLEXGUARD_ACCORDIN_LIB to libflexguard.so path." >&2
-      exit 1
-    fi
   fi
 
   lock_dir="${output_root}/${lock_name}"
@@ -1139,13 +1109,6 @@ for item in "${lock_items[@]}"; do
             --sample-bpf-interval-us "$sample_bpf_interval_us"
           )
         fi
-        ;;
-      flexguard_accordin)
-        sample_bpf_args=(
-          --sample-bpf
-          --sample-bpf-layout "$sample_bpf_layout"
-          --sample-bpf-interval-us "$sample_bpf_interval_us"
-        )
         ;;
     esac
   fi
@@ -1230,17 +1193,6 @@ for item in "${lock_items[@]}"; do
     else
       cmd=(env "${accordin_env_args[@]}" "RECIPROCATING_ACCORDIN_DEBUG_COUNTERS=${RECIPROCATING_ACCORDIN_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
-  elif [[ "$lock_kind" == "flexguard_accordin" ]]; then
-    cmd=(
-      "$sweep_script"
-      "${sweep_args[@]}"
-      "${sample_bpf_args[@]}"
-      --bench-ld-preload "$flexguard_accordin_lib"
-      --lock-kind "mutex"
-      --output-raw "$raw_out"
-      --output-summary "$summary_out"
-    )
-    cmd=(env "${accordin_env_args[@]}" "${cmd[@]}")
   else
     cmd=(
       "$lock_script"
@@ -1280,8 +1232,6 @@ for item in "${lock_items[@]}"; do
   elif [[ "$lock_kind" == "ttas_accordin" && "$dry_run" != "1" ]]; then
     ensure_accordin_sched_ext_ready "$should_sudo" "$mcs_tas_accordin_sched_ext_conflict"
   elif [[ "$lock_kind" == "reciprocating_accordin" && "$dry_run" != "1" ]]; then
-    ensure_accordin_sched_ext_ready "$should_sudo" "$mcs_tas_accordin_sched_ext_conflict"
-  elif [[ "$lock_kind" == "flexguard_accordin" && "$dry_run" != "1" ]]; then
     ensure_accordin_sched_ext_ready "$should_sudo" "$mcs_tas_accordin_sched_ext_conflict"
   fi
 

@@ -32,7 +32,6 @@ Options:
   --timeslice-extension M      off|auto|require (default: off; ignored for *-tse lock kinds)
   --repeats N                  runs per parameter point (default: 3)
   --profile                    Record perf.data for each run and keep it beside raw.csv
-  --sample-heatmap             Record per-run lock_stats heatmap CSV beside raw.csv
   --sample-bpf                 Record per-run accordin BPF sampler CSV beside raw.csv
   --sample-bpf-layout MODE     Sampler layout: auto|v1|v2|legacy|current (default: auto)
   --sample-bpf-interval-us N   Sampler interval in microseconds (default: 500)
@@ -67,7 +66,6 @@ lock_kind="mutex"
 timeslice_extension="off"
 repeats="3"
 profiling_enabled="0"
-sample_heatmap_enabled="0"
 sample_bpf_enabled="0"
 sample_bpf_layout="auto"
 sample_bpf_interval_us="500"
@@ -137,14 +135,6 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       profiling_enabled="1"
-      shift
-      ;;
-    --sample-heatmap)
-      if [[ $# -gt 1 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
-        echo "--sample-heatmap does not take a value; use bare --sample-heatmap" >&2
-        exit 1
-      fi
-      sample_heatmap_enabled="1"
       shift
       ;;
     --sample-bpf)
@@ -549,7 +539,6 @@ for t in "${threads[@]}"; do
         bench_output_path="$(mktemp)"
         pidstat_output_path="$(mktemp)"
         perf_data_path=""
-        heatmap_path=""
         bpf_samples_path=""
         bpf_sampler_pid=""
         bpf_sampler_log_path=""
@@ -558,12 +547,6 @@ for t in "${threads[@]}"; do
         if [[ -n "$bench_ld_preload" ]]; then
           bench_env_args+=("LD_PRELOAD=$bench_ld_preload")
         fi
-        if [[ "$sample_heatmap_enabled" == "1" ]]; then
-          heatmap_path="$output_root/t${t}_c${c}_o${o}_r${r}.heatmap.csv"
-          rm -f -- "$heatmap_path"
-          bench_env_args+=("LOCK_STATS_HEATMAP_PATH=$heatmap_path")
-        fi
-
         if [[ "$profiling_enabled" == "1" ]]; then
           perf_data_path="$output_root/t${t}_c${c}_o${o}_r${r}.perf.data"
           if [[ ${#bench_env_args[@]} -gt 0 ]]; then
@@ -660,14 +643,6 @@ for t in "${threads[@]}"; do
 
         if [[ "$profiling_enabled" == "1" ]]; then
           restore_output_owner_if_sudo_user "$perf_data_path"
-        fi
-        if [[ "$sample_heatmap_enabled" == "1" && -n "$heatmap_path" ]]; then
-          restore_output_owner_if_sudo_user "$heatmap_path"
-          if [[ ! -s "$heatmap_path" ]]; then
-            echo "lock_stats heatmap produced no data for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
-            echo "Ensure --bench-ld-preload points at a lock_stats-enabled accordin library and the workload produced sampled lock operations." >&2
-            exit 1
-          fi
         fi
         if [[ "$sample_bpf_enabled" == "1" && -n "$bpf_samples_path" ]]; then
           restore_output_owner_if_sudo_user "$bpf_samples_path" "$bpf_sampler_log_path"

@@ -123,7 +123,7 @@ scripts/sweep_mutex_throughput.sh \
 
 说明：该脚本会对每次运行启动 `pidstat -u -h -p <pid> 1` 采样 CPU，因此基准时长需要足够长，至少让 `pidstat` 产出一条 `%CPU` 样本。
 
-若启用 `--sample-bpf`，脚本还会为每次运行启动 `scripts/sample_accordin_bpf.py`，并在 `raw.csv` 同目录输出 `t*_c*_o*_r*.bpf_samples.csv`。该功能要求当前 sweep 以 root 身份运行（例如通过 `sudo` 调用脚本），并且仅适用于 `mcs_tas_accordin`、`ttas_accordin`、`flexguard_accordin` 这类 accordin sched_ext 预加载锁。
+若启用 `--sample-bpf`，脚本还会为每次运行启动 `scripts/sample_accordin_bpf.py`，并在 `raw.csv` 同目录输出 `t*_c*_o*_r*.bpf_samples.csv`。该功能要求当前 sweep 以 root 身份运行（例如通过 `sudo` 调用脚本），并且仅适用于 `mcs_tas_accordin`、`ttas_accordin`、`reciprocating_accordin` 这类 accordin sched_ext 预加载锁。
 
 ### 3) 多锁批量扫频
 
@@ -168,7 +168,6 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `mcs_tas_accordin_no_bpf`（通过 `LD_PRELOAD=target/release/libmcs_tas_accordin.so`，并设置 `MCS_TAS_ACCORDIN_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
 - `ttas_accordin`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
 - `ttas_accordin_no_bpf`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`，并设置 `TTAS_ACCORDIN_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
-- `flexguard_accordin`（通过 `LD_PRELOAD=target/release/libflexguard.so`；加 `--profile` 会保留 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
 
 并发说明：
 
