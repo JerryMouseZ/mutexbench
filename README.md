@@ -5,10 +5,10 @@
 
 ## 功能概览
 
-- 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`mcs-tas-tse`、`mcstas-next`、`mcstas-next-tse`、`twa`、`clh`
+- 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`mcs-tas-tse`、`mcs_tas_accordin_direct`、`mcstas-next`、`mcstas-next-tse`、`twa`、`clh`
 - 指标输出：吞吐量、锁内持有时间、平均等待时间近似、解锁到下一次加锁时间估计
 - 扫频脚本：自动生成 `raw.csv`（逐次运行）与 `summary.csv`（聚合统计）
-- 多锁对比：支持内置锁、外部 interpose 脚本、`mcs_tse` / `mcs_tas_accordin` / `ttas_accordin` 预加载模式
+- 多锁对比：支持内置锁、外部 interpose 脚本、`mcs_tse` / `ttas_accordin` 预加载模式，以及 `mcs_tas_accordin` direct-lock 模式
 - Python 工具：多锁统计分析、线程推荐、吞吐量曲线图批量生成
 
 ## 目录结构
@@ -74,7 +74,7 @@ make
 - `--critical-ns N`：请求的临界区 Burn 时间（纳秒）
 - `--outside-ns N`：请求的临界区外 Burn 时间（纳秒）
 - `--timing-sample-stride N`：每 N 次操作采样一次时延
-- `--lock-kind`：`mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh`
+- `--lock-kind`：`mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh`
 - `--timeslice-extension`：`off|auto|require`
 
 兼容性说明：
@@ -123,7 +123,7 @@ scripts/sweep_mutex_throughput.sh \
 
 说明：该脚本会对每次运行启动 `pidstat -u -h -p <pid> 1` 采样 CPU，因此基准时长需要足够长，至少让 `pidstat` 产出一条 `%CPU` 样本。
 
-若启用 `--sample-bpf`，脚本还会为每次运行启动 `scripts/sample_accordin_bpf.py`，并在 `raw.csv` 同目录输出 `t*_c*_o*_r*.bpf_samples.csv`。该功能要求当前 sweep 以 root 身份运行（例如通过 `sudo` 调用脚本），并且仅适用于 `mcs_tas_accordin`、`ttas_accordin`、`reciprocating_accordin` 这类 accordin sched_ext 预加载锁。
+若启用 `--sample-bpf`，脚本还会为每次运行启动 `scripts/sample_accordin_bpf.py`，并在 `raw.csv` 同目录输出 `t*_c*_o*_r*.bpf_samples.csv`。该功能要求当前 sweep 以 root 身份运行（例如通过 `sudo` 调用脚本），并且仅适用于 `mcs_tas_accordin`、`ttas_accordin`、`reciprocating_accordin` 这类 accordin sched_ext 锁。
 
 ### 3) 多锁批量扫频
 
@@ -164,8 +164,8 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
 - `mcs_tse`（通过 `LD_PRELOAD=target/release/libmcs_tse.so` 运行 `mutex` lock kind；可用 `MCS_TSE_LIB` 覆盖库路径，默认按 `target/release`、`target/debug` 查找；不启用 sched_ext 冲突处理或 BPF sampler）
-- `mcs_tas_accordin`（通过 `LD_PRELOAD=target/release/libmcs_tas_accordin.so`；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
-- `mcs_tas_accordin_no_bpf`（通过 `LD_PRELOAD=target/release/libmcs_tas_accordin.so`，并设置 `MCS_TAS_ACCORDIN_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
+- `mcs_tas_accordin`（通过 `MCS_TAS_ACCORDIN_DIRECT_LIB=target/release/libmcs_tas_accordin_direct.so` 调用 `--lock-kind mcs_tas_accordin_direct`，不走 pthread hook；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
+- `mcs_tas_accordin_no_bpf`（同样调用 `mcs_tas_accordin_direct`，并设置 `MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
 - `ttas_accordin`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
 - `ttas_accordin_no_bpf`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`，并设置 `TTAS_ACCORDIN_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
 
