@@ -17,6 +17,7 @@ plot_throughput_by_ratio.py
                        时延分解图路径（默认：<data>/latency_breakdown_by_ratio.png）
     --save-cpu PATH    CPU 使用率图路径（默认：<data>/cpu_by_ratio.png）
     --crits C,…        逗号分隔的 critical_iters 列表（默认自动选 5 个）
+    --min-thread N     只绘制 N 及以上线程数（默认 4）
     --no-show          不弹出交互式窗口（在无头环境下自动生效）
 """
 
@@ -38,8 +39,6 @@ except ModuleNotFoundError as exc:
     ticker = None
 
 
-THREADS_LIST = [1, 2, 4, 8, 16, 32, 48, 64, 80, 96, 128, 160]
-
 _COLOR_POOL = [
     "#2196F3",
     "#FF9800",
@@ -49,8 +48,20 @@ _COLOR_POOL = [
     "#00BCD4",
     "#FF5722",
     "#607D8B",
+    "#795548",
+    "#3F51B5",
+    "#009688",
+    "#CDDC39",
+    "#E91E63",
+    "#8BC34A",
+    "#673AB7",
+    "#FFC107",
+    "#03A9F4",
+    "#9E9E9E",
+    "#4CAF50",
+    "#F44336",
 ]
-_MARKER_POOL = ["o", "s", "^", "D", "v", "P", "X", "*"]
+_MARKER_POOL = ["o", "s", "^", "D", "v", "P", "X", "*", "<", ">", "h", "H", "p"]
 
 NCPUS = 96
 
@@ -62,6 +73,7 @@ LATENCY_METRICS = [
     ("avg_lock_handoff_ns_estimated", "Handoff Est. (ns/op)"),
 ]
 ALL_PLOT_REQUIRED_FIELDS = LATENCY_PLOT_REQUIRED_FIELDS | CPU_PLOT_REQUIRED_FIELDS
+DEFAULT_MIN_THREAD = 4
 
 
 def discover_locks(data_dir: str) -> list[str]:
@@ -124,6 +136,23 @@ def available_crit_values(data: dict[str, list[dict[str, str]]]) -> list[int]:
     values = sorted({int(row["critical_iters"]) for rows in data.values() for row in rows})
     if not values:
         sys.exit("Error: 数据集中没有可用的 critical_iters。")
+    return values
+
+
+def available_thread_values(
+    data: dict[str, list[dict[str, str]]],
+    min_thread: int = DEFAULT_MIN_THREAD,
+) -> list[int]:
+    values = sorted(
+        {
+            int(row["threads"])
+            for rows in data.values()
+            for row in rows
+            if int(row["threads"]) >= min_thread
+        }
+    )
+    if not values:
+        sys.exit(f"Error: 数据集中没有 >= {min_thread} 的可用 threads。")
     return values
 
 
@@ -246,6 +275,7 @@ def auto_select_crits(crit_values: list[int], out: int, n: int = 5) -> list[int]
 def print_table(
     data: dict[str, list[dict[str, str]]],
     locks: list[str],
+    threads_list: list[int],
     out: int,
     crits: list[int],
     out_values: list[int],
@@ -262,7 +292,7 @@ def print_table(
         print(header)
         print(sep)
 
-        for threads in THREADS_LIST:
+        for threads in threads_list:
             row = f"{threads:>{thr_w}}"
             for lock in locks:
                 value = get_tp_interp(data, lock, threads, crit, out, out_values)
@@ -272,7 +302,7 @@ def print_table(
     print()
 
 
-def _configure_x_axis(ax, ymax: float, annotate_cpus: bool) -> None:
+def _configure_x_axis(ax, ymax: float, annotate_cpus: bool, threads_list: list[int]) -> None:
     ax.set_xscale("log", base=2)
     ax.axvline(x=NCPUS, color="#AAAAAA", linewidth=1.4, linestyle="--", zorder=1)
     if annotate_cpus:
@@ -286,10 +316,12 @@ def _configure_x_axis(ax, ymax: float, annotate_cpus: bool) -> None:
             ha="left",
             style="italic",
         )
-    ax.set_xlim(0.8, 200)
-    ax.set_xticks(THREADS_LIST)
+    min_thread = min(threads_list)
+    max_thread = max(threads_list)
+    ax.set_xlim(max(0.5, min_thread * 0.8), max(max_thread * 1.18, NCPUS * 1.2))
+    ax.set_xticks(threads_list)
     ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
-    ax.set_xticklabels([str(t) for t in THREADS_LIST], rotation=50, ha="right", fontsize=8)
+    ax.set_xticklabels([str(t) for t in threads_list], rotation=50, ha="right", fontsize=8)
 
 
 def _style_axis(ax, ymax: float, yfmt: str = "%.2f") -> None:
@@ -327,6 +359,7 @@ def _style_log_y_axis(ax, ymin: float, ymax: float) -> None:
 def plot(
     data: dict[str, list[dict[str, str]]],
     locks: list[str],
+    threads_list: list[int],
     colors: dict[str, str],
     markers: dict[str, str],
     out: int,
@@ -353,15 +386,15 @@ def plot(
         series: dict[str, list[float | None]] = {}
         all_ys: list[float] = []
         for lock in locks:
-            ys = [get_tp_interp(data, lock, threads, crit, out, out_values) for threads in THREADS_LIST]
+            ys = [get_tp_interp(data, lock, threads, crit, out, out_values) for threads in threads_list]
             series[lock] = ys
             all_ys.extend(y for y in ys if y is not None)
 
         ymax = max(all_ys) * 1.12 if all_ys else 1.0
-        _configure_x_axis(ax, ymax, annotate_cpus=True)
+        _configure_x_axis(ax, ymax, annotate_cpus=True, threads_list=threads_list)
 
         for lock in locks:
-            xs = [threads for threads, value in zip(THREADS_LIST, series[lock]) if value is not None]
+            xs = [threads for threads, value in zip(threads_list, series[lock]) if value is not None]
             ys = [value for value in series[lock] if value is not None]
             ax.plot(
                 xs,
@@ -415,6 +448,7 @@ def plot(
 def plot_latency_breakdown(
     data: dict[str, list[dict[str, str]]],
     locks: list[str],
+    threads_list: list[int],
     colors: dict[str, str],
     markers: dict[str, str],
     out: int,
@@ -448,19 +482,19 @@ def plot_latency_breakdown(
             for lock in locks:
                 ys = [
                     get_metric_interp(data, lock, threads, crit, out, field, out_values)
-                    for threads in THREADS_LIST
+                    for threads in threads_list
                 ]
                 series[lock] = ys
                 all_ys.extend(y for y in ys if y is not None and y > 0)
 
             ymin = min(all_ys) / 1.12 if all_ys else 1e-3
             ymax = max(all_ys) * 1.12 if all_ys else 1.0
-            _configure_x_axis(ax, ymax, annotate_cpus=(row_index == 0))
+            _configure_x_axis(ax, ymax, annotate_cpus=(row_index == 0), threads_list=threads_list)
 
             for lock in locks:
                 xs = [
                     threads
-                    for threads, value in zip(THREADS_LIST, series[lock])
+                    for threads, value in zip(threads_list, series[lock])
                     if value is not None and value > 0
                 ]
                 ys = [value for value in series[lock] if value is not None and value > 0]
@@ -521,6 +555,7 @@ def plot_latency_breakdown(
 def plot_cpu_usage(
     data: dict[str, list[dict[str, str]]],
     locks: list[str],
+    threads_list: list[int],
     colors: dict[str, str],
     markers: dict[str, str],
     out: int,
@@ -549,16 +584,16 @@ def plot_cpu_usage(
         for lock in locks:
             ys = [
                 get_metric_interp(data, lock, threads, crit, out, CPU_FIELD, out_values)
-                for threads in THREADS_LIST
+                for threads in threads_list
             ]
             series[lock] = ys
             all_ys.extend(y for y in ys if y is not None)
 
         ymax = max(all_ys) * 1.12 if all_ys else 100.0
-        _configure_x_axis(ax, ymax, annotate_cpus=True)
+        _configure_x_axis(ax, ymax, annotate_cpus=True, threads_list=threads_list)
 
         for lock in locks:
-            xs = [threads for threads, value in zip(THREADS_LIST, series[lock]) if value is not None]
+            xs = [threads for threads, value in zip(threads_list, series[lock]) if value is not None]
             ys = [value for value in series[lock] if value is not None]
             ax.plot(
                 xs,
@@ -635,6 +670,12 @@ def parse_args() -> argparse.Namespace:
         help="CPU 使用率图路径（默认：<data>/cpu_by_ratio.png）",
     )
     p.add_argument("--crits", default=None, help="逗号分隔的 critical_iters 列表，例如 '10,100,800'")
+    p.add_argument(
+        "--min-thread",
+        type=int,
+        default=DEFAULT_MIN_THREAD,
+        help=f"只绘制该值及以上线程数（默认 {DEFAULT_MIN_THREAD}）",
+    )
     p.add_argument("--no-show", action="store_true", help="不弹出交互式窗口")
     return p.parse_args()
 
@@ -658,6 +699,7 @@ def main() -> None:
 
     colors, markers = build_styles(locks)
     data = load_data(data_dir, locks, required_fields=ALL_PLOT_REQUIRED_FIELDS)
+    threads_list = available_thread_values(data, min_thread=args.min_thread)
     out_values = available_out_values(data)
     crit_values = available_crit_values(data)
 
@@ -680,11 +722,14 @@ def main() -> None:
         hi = min((v for v in out_values if v > args.out), default=None)
         print(f"注意：out={args.out} 不在数据集中，将在 {lo} 和 {hi} 之间线性插值。")
 
-    print_table(data, locks, args.out, crits, out_values)
-    plot(data, locks, colors, markers, args.out, crits, out_values, save_path, show)
+    print(f"线程列表：{threads_list}")
+
+    print_table(data, locks, threads_list, args.out, crits, out_values)
+    plot(data, locks, threads_list, colors, markers, args.out, crits, out_values, save_path, show)
     plot_latency_breakdown(
         data,
         locks,
+        threads_list,
         colors,
         markers,
         args.out,
@@ -693,7 +738,18 @@ def main() -> None:
         latency_save_path,
         show,
     )
-    plot_cpu_usage(data, locks, colors, markers, args.out, crits, out_values, cpu_save_path, show)
+    plot_cpu_usage(
+        data,
+        locks,
+        threads_list,
+        colors,
+        markers,
+        args.out,
+        crits,
+        out_values,
+        cpu_save_path,
+        show,
+    )
 
 
 if __name__ == "__main__":

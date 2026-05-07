@@ -10,6 +10,7 @@ batch_plot_all_out.py
     --data DIR    results 根目录（默认：脚本所在目录的上级 results-new/）
     --out-dir DIR 图片输出目录（默认：<data>/plots/）
     --crits C,…   逗号分隔的 critical_iters 列表（默认各 out 自动选 5 个）
+    --min-thread N 只绘制 N 及以上线程数（默认 4）
     --jobs N      并行进程数（默认：1，顺序执行）
 """
 
@@ -54,7 +55,13 @@ def discover_out_values(data_dir: str) -> list[int]:
 
 # ── 单任务入口（供子进程调用） ───────────────────────────────────────────────
 
-def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tuple[str, str, str]:
+def _run_one(
+    data_dir: str,
+    out_dir: str,
+    out: int,
+    crits_arg: str | None,
+    min_thread: int,
+) -> tuple[str, str, str]:
     """在独立进程中为单个 out 值生成三张图片，返回保存路径。"""
     # 延迟导入，避免主进程 matplotlib 状态污染子进程
     try:
@@ -77,7 +84,7 @@ def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tu
         CPU_PLOT_REQUIRED_FIELDS,
         LATENCY_PLOT_REQUIRED_FIELDS,
         discover_locks, build_styles, load_data,
-        available_out_values, available_crit_values,
+        available_out_values, available_crit_values, available_thread_values,
         auto_select_crits, plot, plot_cpu_usage, plot_latency_breakdown,
     )
 
@@ -88,6 +95,7 @@ def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tu
         locks,
         required_fields=LATENCY_PLOT_REQUIRED_FIELDS | CPU_PLOT_REQUIRED_FIELDS,
     )
+    threads = available_thread_values(data, min_thread=min_thread)
     out_values = available_out_values(data)
     crit_values = available_crit_values(data)
 
@@ -99,10 +107,11 @@ def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tu
     throughput_path = os.path.join(out_dir, f"throughput_out{out:04d}.png")
     latency_path = os.path.join(out_dir, f"latency_breakdown_out{out:04d}.png")
     cpu_path = os.path.join(out_dir, f"cpu_out{out:04d}.png")
-    plot(data, locks, colors, markers, out, crits, out_values, throughput_path, show=False)
+    plot(data, locks, threads, colors, markers, out, crits, out_values, throughput_path, show=False)
     plot_latency_breakdown(
         data,
         locks,
+        threads,
         colors,
         markers,
         out,
@@ -111,7 +120,7 @@ def _run_one(data_dir: str, out_dir: str, out: int, crits_arg: str | None) -> tu
         latency_path,
         show=False,
     )
-    plot_cpu_usage(data, locks, colors, markers, out, crits, out_values, cpu_path, show=False)
+    plot_cpu_usage(data, locks, threads, colors, markers, out, crits, out_values, cpu_path, show=False)
     return throughput_path, latency_path, cpu_path
 
 
@@ -129,6 +138,8 @@ def parse_args():
                    help="图片输出目录（默认：<data>/plots/）")
     p.add_argument("--crits", default=None,
                    help="逗号分隔的 critical_iters 列表，例如 '10,100,800'")
+    p.add_argument("--min-thread", type=int, default=4,
+                   help="只绘制该值及以上线程数（默认 4）")
     p.add_argument("--jobs", type=int, default=1,
                    help="并行进程数（默认 1）")
     return p.parse_args()
@@ -145,14 +156,15 @@ def main():
     print(f"数据目录  : {data_dir}")
     print(f"输出目录  : {out_dir}")
     print(f"out 值列表: {out_values}  ({len(out_values)} 个)")
+    print(f"最小线程  : {args.min_thread}")
     print(f"并行进程  : {args.jobs}")
     print()
 
-    tasks = [(data_dir, out_dir, out, args.crits) for out in out_values]
+    tasks = [(data_dir, out_dir, out, args.crits, args.min_thread) for out in out_values]
 
     if args.jobs == 1:
-        for i, (d, o, out, crits) in enumerate(tasks, 1):
-            throughput_path, latency_path, cpu_path = _run_one(d, o, out, crits)
+        for i, (d, o, out, crits, min_thread) in enumerate(tasks, 1):
+            throughput_path, latency_path, cpu_path = _run_one(d, o, out, crits, min_thread)
             print(
                 f"[{i}/{len(tasks)}] throughput={throughput_path} "
                 f"latency={latency_path} cpu={cpu_path}"
