@@ -74,6 +74,19 @@ LATENCY_METRICS = [
 ]
 ALL_PLOT_REQUIRED_FIELDS = LATENCY_PLOT_REQUIRED_FIELDS | CPU_PLOT_REQUIRED_FIELDS
 DEFAULT_MIN_THREAD = 4
+LOCK_LABELS = {
+    "accordin": "Admission only",
+    "mcs_accordin": "Admission only",
+    "mcs_tas_accordin": "Admission only",
+    "mcs_tas_accordin_admission_only": "Admission only",
+    "mcs_tas_accordin_sampled": "Admission + core budget",
+    "mcs_tas_accordin_no_admission": "Core budget only",
+    "mcs_tas_accordin_taskset": "Oracle static-K Accordin",
+}
+
+
+def lock_label(lock: str) -> str:
+    return LOCK_LABELS.get(lock, lock)
 
 
 def discover_locks(data_dir: str) -> list[str]:
@@ -405,7 +418,7 @@ def plot(
                 markersize=6,
                 markerfacecolor="white",
                 markeredgewidth=1.8,
-                label=lock,
+                label=lock_label(lock),
                 zorder=3,
             )
 
@@ -507,7 +520,7 @@ def plot_latency_breakdown(
                     markersize=5.6,
                     markerfacecolor="white",
                     markeredgewidth=1.6,
-                    label=lock,
+                    label=lock_label(lock),
                     zorder=3,
                 )
 
@@ -604,7 +617,7 @@ def plot_cpu_usage(
                 markersize=6,
                 markerfacecolor="white",
                 markeredgewidth=1.8,
-                label=lock,
+                label=lock_label(lock),
                 zorder=3,
             )
 
