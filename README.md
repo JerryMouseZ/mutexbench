@@ -164,10 +164,10 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
 - `mcs_tse`（通过 `LD_PRELOAD=target/release/libmcs_tse.so` 运行 `mutex` lock kind；可用 `MCS_TSE_LIB` 覆盖库路径，默认按 `target/release`、`target/debug` 查找；不启用 sched_ext 冲突处理或 BPF sampler）
-- `mcs_tas_accordin`（通过 `MCS_TAS_ACCORDIN_DIRECT_LIB=target/release/libmcs_tas_accordin_direct.so` 调用 `--lock-kind mcs_tas_accordin_direct`，不走 pthread hook；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
-- `mcs_tas_accordin_no_bpf`（同样调用 `mcs_tas_accordin_direct`，并设置 `MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
-- `ttas_accordin`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`；加 `--profile` 会保留每次运行的 `perf.data`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
-- `ttas_accordin_no_bpf`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`，并设置 `TTAS_ACCORDIN_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data`）
+- `mcs_tas_accordin`（通过 `MCS_TAS_ACCORDIN_DIRECT_LIB=target/release/libmcs_tas_accordin_direct.so` 调用 `--lock-kind mcs_tas_accordin_direct`，不走 pthread hook；加 `--profile` 会保留每次运行的 `perf.data`，并生成可读的 `perf_reports/*.report.txt` / `*.script.txt`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
+- `mcs_tas_accordin_no_bpf`（同样调用 `mcs_tas_accordin_direct`，并设置 `MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data` 并生成 `perf_reports/`）
+- `ttas_accordin`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`；加 `--profile` 会保留每次运行的 `perf.data` 并生成 `perf_reports/`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
+- `ttas_accordin_no_bpf`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`，并设置 `TTAS_ACCORDIN_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data` 并生成 `perf_reports/`）
 
 并发说明：
 
@@ -201,6 +201,20 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 其中 `avg_cpu_pct` 表示该次运行的 steady `%CPU` 均值：脚本从该 PID 的 `pidstat` 输出中取最后 `duration-ms` 对应的样本窗口再求平均，以避免把启动、预热前等待或退出清理阶段计入稳态 CPU 使用率。
 
 启用 `--sample-bpf` 时，每次运行会在 `raw.csv` 同目录额外生成一个 `t*_c*_o*_r*.bpf_samples.csv`，用于后续分析 accordin 控制面趋势。
+
+启用 `--profile` 时，多锁脚本会在每个 lock 目录下生成 `perf_reports/`：
+
+- `t*_c*_o*_r*.report.txt`：`perf report --stdio -f` 的文本结果
+- `t*_c*_o*_r*.script.txt`：`perf script --demangle -f -F ip,sym,dso` 的逐样本结果
+- `index.csv`：把每个 `(threads, critical_iters, outside_iters, repeat)` 映射到对应的 `perf.data`、report 和 script
+
+如果 `/proc/sys/kernel/kptr_restrict` 限制普通用户读取内核符号，多锁脚本会优先使用 `sudo -n perf ... -f` 生成 report；手动分析已有结果时也应使用：
+
+```bash
+sudo perf report --stdio -f -i results/<lock>/t*_c*_o*_r*.perf.data
+```
+
+对默认路径下的 Accordin Rust 锁，`--profile` 会自动用 `--features perf-symbols` 重建对应库，避免内部热点函数被 inline 后只显示成外层 C wrapper。若显式设置了 `MCS_TAS_ACCORDIN_DIRECT_LIB`、`TTAS_ACCORDIN_LIB` 等库路径，脚本会使用调用者提供的库，不会自动重建。
 
 ### `summary.csv`（聚合结果）
 
