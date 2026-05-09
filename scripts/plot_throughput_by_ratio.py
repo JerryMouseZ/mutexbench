@@ -81,7 +81,7 @@ LOCK_LABELS = {
     "mcs_tas_accordin_admission_only": "Admission only",
     "mcs_tas_accordin_sampled": "Admission + core budget",
     "mcs_tas_accordin_no_admission": "Core budget only",
-    "mcs_tas_accordin_taskset": "Oracle static-K Accordin",
+    "mcs_tas_accordin_taskset": "Profiled static-K Accordin",
 }
 
 
