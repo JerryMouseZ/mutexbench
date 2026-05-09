@@ -22,6 +22,7 @@ plot_throughput_by_ratio.py
 """
 
 import argparse
+import math
 import os
 import sys
 
@@ -74,6 +75,32 @@ LATENCY_METRICS = [
 ]
 ALL_PLOT_REQUIRED_FIELDS = LATENCY_PLOT_REQUIRED_FIELDS | CPU_PLOT_REQUIRED_FIELDS
 DEFAULT_MIN_THREAD = 4
+AXIS_TICK_FONTSIZE = 10.5
+CPU_ANNOTATION_FONTSIZE = 9.5
+THROUGHPUT_PANEL_TITLE_FONTSIZE = 14
+THROUGHPUT_AXIS_LABEL_FONTSIZE = 12.5
+THROUGHPUT_LEGEND_FONTSIZE = 12
+THROUGHPUT_SUPTITLE_FONTSIZE = 17
+BOTTOM_LEGEND_PLOT_RECT = 0.085
+ACCORDIN_COLOR = "#607D8B"
+ACCORDIN_LOCKS = {
+    "accordin",
+    "mcs_accordin",
+    "mcs_tas_accordin",
+    "mcs_tas_accordin_admission_only",
+    "mcs_tas_accordin_sampled",
+    "mcs_tas_accordin_no_admission",
+    "mcs_tas_accordin_taskset",
+}
+ACCORDIN_LINESTYLES = {
+    "accordin": "-",
+    "mcs_accordin": "-",
+    "mcs_tas_accordin": "-",
+    "mcs_tas_accordin_admission_only": "-",
+    "mcs_tas_accordin_sampled": "--",
+    "mcs_tas_accordin_no_admission": ":",
+    "mcs_tas_accordin_taskset": "-.",
+}
 LOCK_LABELS = {
     "accordin": "Admission only",
     "mcs_accordin": "Admission only",
@@ -87,6 +114,10 @@ LOCK_LABELS = {
 
 def lock_label(lock: str) -> str:
     return LOCK_LABELS.get(lock, lock)
+
+
+def lock_linestyle(lock: str) -> str:
+    return ACCORDIN_LINESTYLES.get(lock, "-")
 
 
 def discover_locks(data_dir: str) -> list[str]:
@@ -108,8 +139,28 @@ def discover_locks(data_dir: str) -> list[str]:
 
 def build_styles(locks: list[str]) -> tuple[dict[str, str], dict[str, str]]:
     colors = {lock: _COLOR_POOL[i % len(_COLOR_POOL)] for i, lock in enumerate(locks)}
+    for lock in locks:
+        if lock in ACCORDIN_LOCKS:
+            colors[lock] = ACCORDIN_COLOR
     markers = {lock: _MARKER_POOL[i % len(_MARKER_POOL)] for i, lock in enumerate(locks)}
     return colors, markers
+
+
+def add_bottom_legend(fig, handles, labels_: list[str], fontsize: float) -> None:
+    fig.legend(
+        handles,
+        labels_,
+        loc="lower center",
+        ncol=max(1, math.ceil(len(labels_) / 2)),
+        fontsize=fontsize,
+        frameon=True,
+        framealpha=0.95,
+        edgecolor="#CCCCCC",
+        bbox_to_anchor=(0.5, 0.0),
+        handlelength=2.2,
+        columnspacing=1.7,
+        labelspacing=0.7,
+    )
 
 
 def require_matplotlib() -> None:
@@ -322,9 +373,9 @@ def _configure_x_axis(ax, ymax: float, annotate_cpus: bool, threads_list: list[i
         ax.text(
             NCPUS * 1.05,
             ymax * 0.97,
-            f"{NCPUS} CPUs",
+            "Oversubscribed",
             color="#999",
-            fontsize=7.5,
+            fontsize=CPU_ANNOTATION_FONTSIZE,
             va="top",
             ha="left",
             style="italic",
@@ -334,14 +385,19 @@ def _configure_x_axis(ax, ymax: float, annotate_cpus: bool, threads_list: list[i
     ax.set_xlim(max(0.5, min_thread * 0.8), max(max_thread * 1.18, NCPUS * 1.2))
     ax.set_xticks(threads_list)
     ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
-    ax.set_xticklabels([str(t) for t in threads_list], rotation=50, ha="right", fontsize=8)
+    ax.set_xticklabels(
+        [str(t) for t in threads_list],
+        rotation=50,
+        ha="right",
+        fontsize=AXIS_TICK_FONTSIZE,
+    )
 
 
 def _style_axis(ax, ymax: float, yfmt: str = "%.2f") -> None:
     safe_ymax = ymax if ymax > 0 else 1.0
     ax.set_ylim(0, safe_ymax)
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter(yfmt))
-    ax.tick_params(axis="y", labelsize=8.5)
+    ax.tick_params(axis="y", labelsize=AXIS_TICK_FONTSIZE)
     ax.grid(True, linestyle=":", alpha=0.5, color="#DDDDDD", zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
     ax.spines[["left", "bottom"]].set_color("#CCCCCC")
@@ -385,11 +441,18 @@ def plot(
 
     interpolated = out not in out_values
     out_label = f"out={out}" + (" (interpolated)" if interpolated else "")
-    ncols = max(4, len(locks))
+    subplot_cols = 1 if len(crits) == 1 else 2
+    subplot_rows = math.ceil(len(crits) / subplot_cols)
 
-    fig, axes = plt.subplots(1, len(crits), figsize=(5 * len(crits) + 4, 5.8))
-    if len(crits) == 1:
-        axes = [axes]
+    fig, axes_grid = plt.subplots(
+        subplot_rows,
+        subplot_cols,
+        figsize=(7.8 * subplot_cols, 5.7 * subplot_rows),
+        squeeze=False,
+    )
+    axes = list(axes_grid.ravel())
+    for ax in axes[len(crits):]:
+        ax.set_visible(False)
     fig.patch.set_facecolor("#F7F7F7")
 
     for ax, crit in zip(axes, crits):
@@ -413,6 +476,7 @@ def plot(
                 xs,
                 ys,
                 color=colors[lock],
+                linestyle=lock_linestyle(lock),
                 marker=markers[lock],
                 linewidth=2.2,
                 markersize=6,
@@ -423,33 +487,26 @@ def plot(
             )
 
         _style_axis(ax, ymax)
-        ax.set_title(f"ratio = {ratio:.2f}  (crit={crit})", fontsize=11, fontweight="bold", pad=10)
-        ax.set_xlabel("Threads", fontsize=9.5, labelpad=4)
-        ax.set_ylabel("Throughput (Mops/s)", fontsize=9.5)
+        ax.set_title(
+            f"ratio = {ratio:.2f}  (crit={crit})",
+            fontsize=THROUGHPUT_PANEL_TITLE_FONTSIZE,
+            fontweight="bold",
+            pad=10,
+        )
+        ax.set_xlabel("Threads", fontsize=THROUGHPUT_AXIS_LABEL_FONTSIZE, labelpad=4)
+        ax.set_ylabel("Throughput (Mops/s)", fontsize=THROUGHPUT_AXIS_LABEL_FONTSIZE)
 
     handles, labels_ = axes[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels_,
-        loc="lower center",
-        ncol=ncols,
-        fontsize=11,
-        frameon=True,
-        framealpha=0.95,
-        edgecolor="#CCCCCC",
-        bbox_to_anchor=(0.5, -0.02),
-        handlelength=2.2,
-        columnspacing=2.0,
-    )
+    add_bottom_legend(fig, handles, labels_, THROUGHPUT_LEGEND_FONTSIZE)
 
     fig.suptitle(
         f"Mutex Throughput vs. Thread Count  -  {out_label}",
-        fontsize=13.5,
+        fontsize=THROUGHPUT_SUPTITLE_FONTSIZE,
         fontweight="bold",
-        y=1.02,
+        y=0.995,
     )
 
-    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    plt.tight_layout(rect=[0, BOTTOM_LEGEND_PLOT_RECT, 1, 0.97])
     plt.savefig(save_path, dpi=160, bbox_inches="tight", facecolor=fig.get_facecolor())
     print(f"Saved: {save_path}")
 
@@ -474,7 +531,6 @@ def plot_latency_breakdown(
 
     interpolated = out not in out_values
     out_label = f"out={out}" + (" (interpolated)" if interpolated else "")
-    ncols = max(4, len(locks))
 
     fig, axes = plt.subplots(
         len(LATENCY_METRICS),
@@ -515,6 +571,7 @@ def plot_latency_breakdown(
                     xs,
                     ys,
                     color=colors[lock],
+                    linestyle=lock_linestyle(lock),
                     marker=markers[lock],
                     linewidth=2.0,
                     markersize=5.6,
@@ -536,19 +593,7 @@ def plot_latency_breakdown(
             ax.set_xlabel("Threads", fontsize=9.3, labelpad=4)
 
     handles, labels_ = axes[0][0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels_,
-        loc="lower center",
-        ncol=ncols,
-        fontsize=11,
-        frameon=True,
-        framealpha=0.95,
-        edgecolor="#CCCCCC",
-        bbox_to_anchor=(0.5, -0.015),
-        handlelength=2.2,
-        columnspacing=2.0,
-    )
+    add_bottom_legend(fig, handles, labels_, 11)
     fig.suptitle(
         f"Mutex Latency Breakdown vs. Thread Count  -  {out_label}",
         fontsize=13.5,
@@ -556,7 +601,7 @@ def plot_latency_breakdown(
         y=1.01,
     )
 
-    plt.tight_layout(rect=[0, 0.06, 1, 0.98])
+    plt.tight_layout(rect=[0, BOTTOM_LEGEND_PLOT_RECT, 1, 0.98])
     plt.savefig(save_path, dpi=160, bbox_inches="tight", facecolor=fig.get_facecolor())
     print(f"Saved: {save_path}")
 
@@ -581,7 +626,6 @@ def plot_cpu_usage(
 
     interpolated = out not in out_values
     out_label = f"out={out}" + (" (interpolated)" if interpolated else "")
-    ncols = max(4, len(locks))
 
     fig, axes = plt.subplots(1, len(crits), figsize=(5 * len(crits) + 4, 5.8))
     if len(crits) == 1:
@@ -612,6 +656,7 @@ def plot_cpu_usage(
                 xs,
                 ys,
                 color=colors[lock],
+                linestyle=lock_linestyle(lock),
                 marker=markers[lock],
                 linewidth=2.2,
                 markersize=6,
@@ -627,19 +672,7 @@ def plot_cpu_usage(
         ax.set_ylabel("CPU Usage (%)", fontsize=9.5)
 
     handles, labels_ = axes[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels_,
-        loc="lower center",
-        ncol=ncols,
-        fontsize=11,
-        frameon=True,
-        framealpha=0.95,
-        edgecolor="#CCCCCC",
-        bbox_to_anchor=(0.5, -0.02),
-        handlelength=2.2,
-        columnspacing=2.0,
-    )
+    add_bottom_legend(fig, handles, labels_, 11)
 
     fig.suptitle(
         f"Mutex CPU Usage vs. Thread Count  -  {out_label}",
@@ -648,7 +681,7 @@ def plot_cpu_usage(
         y=1.02,
     )
 
-    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    plt.tight_layout(rect=[0, BOTTOM_LEGEND_PLOT_RECT, 1, 1])
     plt.savefig(save_path, dpi=160, bbox_inches="tight", facecolor=fig.get_facecolor())
     print(f"Saved: {save_path}")
 
