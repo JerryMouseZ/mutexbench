@@ -82,7 +82,6 @@ THROUGHPUT_AXIS_LABEL_FONTSIZE = 12.5
 THROUGHPUT_LEGEND_FONTSIZE = 12
 THROUGHPUT_SUPTITLE_FONTSIZE = 17
 BOTTOM_LEGEND_PLOT_RECT = 0.085
-ACCORDIN_COLOR = "#607D8B"
 ACCORDIN_LOCKS = {
     "accordin",
     "mcs_accordin",
@@ -92,15 +91,69 @@ ACCORDIN_LOCKS = {
     "mcs_tas_accordin_no_admission",
     "mcs_tas_accordin_taskset",
 }
-ACCORDIN_LINESTYLES = {
+LOCK_COLORS = {
+    "flexguard": "#2196F3",
+    "malthusian": "#FF9800",
+    "mcs": "#43A047",
+    "mcs-tas": "#E53935",
+    "mcs_tas": "#E53935",
+    "mcstas": "#E53935",
+    "mcs_extension": "#9C27B0",
+    "mcs-tse": "#9C27B0",
+    "mcs_tse": "#9C27B0",
+    "mcstp": "#3F51B5",
+    "reciprocating": "#009688",
+    "accordin": "#607D8B",
+    "mcs_accordin": "#607D8B",
+    "mcs_tas_accordin": "#607D8B",
+    "mcs_tas_accordin_admission_only": "#607D8B",
+    "mcs_tas_accordin_sampled": "#607D8B",
+    "mcs_tas_accordin_no_admission": "#607D8B",
+    "mcs_tas_accordin_taskset": "#607D8B",
+}
+LOCK_LINESTYLES = {
+    "flexguard": "-",
+    "malthusian": "-",
+    "mcs": "-",
+    "mcs-tas": "-",
+    "mcs_tas": "-",
+    "mcstas": "-",
+    "mcs_extension": "-",
+    "mcs-tse": "-",
+    "mcs_tse": "-",
+    "mcstp": "-",
+    "reciprocating": "-",
     "accordin": "-",
     "mcs_accordin": "-",
     "mcs_tas_accordin": "-",
     "mcs_tas_accordin_admission_only": "-",
     "mcs_tas_accordin_sampled": "--",
-    "mcs_tas_accordin_no_admission": ":",
-    "mcs_tas_accordin_taskset": "-.",
+    "mcs_tas_accordin_no_admission": "--",
+    "mcs_tas_accordin_taskset": "--",
 }
+LOCK_MARKERS = {
+    "flexguard": "o",
+    "malthusian": "s",
+    "mcs": "^",
+    "mcs-tas": "D",
+    "mcs_tas": "D",
+    "mcstas": "D",
+    "mcs_extension": "v",
+    "mcs-tse": "v",
+    "mcs_tse": "v",
+    "mcstp": ">",
+    "reciprocating": "h",
+    "accordin": "P",
+    "mcs_accordin": "P",
+    "mcs_tas_accordin": "P",
+    "mcs_tas_accordin_admission_only": "P",
+    "mcs_tas_accordin_sampled": "*",
+    "mcs_tas_accordin_no_admission": ">",
+    "mcs_tas_accordin_taskset": "<",
+}
+ACCORDIN_COLOR = LOCK_COLORS["mcs_tas_accordin"]
+ACCORDIN_LINESTYLES = {lock: LOCK_LINESTYLES[lock] for lock in ACCORDIN_LOCKS}
+ACCORDIN_MARKERS = {lock: LOCK_MARKERS[lock] for lock in ACCORDIN_LOCKS}
 LOCK_LABELS = {
     "accordin": "Admission only",
     "mcs_accordin": "Admission only",
@@ -116,8 +169,16 @@ def lock_label(lock: str) -> str:
     return LOCK_LABELS.get(lock, lock)
 
 
+def lock_color(lock: str, fallback: str) -> str:
+    return LOCK_COLORS.get(lock, fallback)
+
+
 def lock_linestyle(lock: str) -> str:
-    return ACCORDIN_LINESTYLES.get(lock, "-")
+    return LOCK_LINESTYLES.get(lock, "-")
+
+
+def lock_marker(lock: str, fallback: str) -> str:
+    return LOCK_MARKERS.get(lock, fallback)
 
 
 def discover_locks(data_dir: str) -> list[str]:
@@ -138,11 +199,14 @@ def discover_locks(data_dir: str) -> list[str]:
 
 
 def build_styles(locks: list[str]) -> tuple[dict[str, str], dict[str, str]]:
-    colors = {lock: _COLOR_POOL[i % len(_COLOR_POOL)] for i, lock in enumerate(locks)}
-    for lock in locks:
-        if lock in ACCORDIN_LOCKS:
-            colors[lock] = ACCORDIN_COLOR
-    markers = {lock: _MARKER_POOL[i % len(_MARKER_POOL)] for i, lock in enumerate(locks)}
+    colors = {
+        lock: lock_color(lock, _COLOR_POOL[i % len(_COLOR_POOL)])
+        for i, lock in enumerate(locks)
+    }
+    markers = {
+        lock: lock_marker(lock, _MARKER_POOL[i % len(_MARKER_POOL)])
+        for i, lock in enumerate(locks)
+    }
     return colors, markers
 
 
