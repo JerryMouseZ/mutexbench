@@ -92,6 +92,7 @@ ACCORDIN_LOCKS = {
     "mcs_tas_accordin_taskset",
 }
 LOCK_COLORS = {
+    "mutex": "#757575",
     "flexguard": "#2196F3",
     "malthusian": "#FF9800",
     "mcs": "#43A047",
@@ -112,6 +113,7 @@ LOCK_COLORS = {
     "mcs_tas_accordin_taskset": "#607D8B",
 }
 LOCK_LINESTYLES = {
+    "mutex": "-",
     "flexguard": "-",
     "malthusian": "-",
     "mcs": "-",
@@ -132,6 +134,7 @@ LOCK_LINESTYLES = {
     "mcs_tas_accordin_taskset": "--",
 }
 LOCK_MARKERS = {
+    "mutex": "x",
     "flexguard": "o",
     "malthusian": "s",
     "mcs": "^",
@@ -155,6 +158,7 @@ ACCORDIN_COLOR = LOCK_COLORS["mcs_tas_accordin"]
 ACCORDIN_LINESTYLES = {lock: LOCK_LINESTYLES[lock] for lock in ACCORDIN_LOCKS}
 ACCORDIN_MARKERS = {lock: LOCK_MARKERS[lock] for lock in ACCORDIN_LOCKS}
 LOCK_LABELS = {
+    "mutex": "Mutex",
     "accordin": "Admission only",
     "mcs_accordin": "Admission only",
     "mcs_tas_accordin": "Admission only",
