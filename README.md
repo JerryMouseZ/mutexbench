@@ -175,6 +175,30 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 - 当多个来自不同目录、不同 worktree、甚至不同用户的实例同时启动时，后来的实例会阻塞排队，不会并行运行影响测量结果
 - 如需在测试或隔离环境中覆盖锁文件路径，可设置环境变量 `MUTEXBENCH_MULTI_LOCK_LOCK_FILE=/path/to/lock`
 
+### 4) 同进程 two-lock workload
+
+`mutex_bench` 支持 `--workload two-lock`，用于构造两个独立锁 `L1/L2`：
+总线程数一分为二，Group A 只访问 `L1`，Group B 只访问 `L2`，并且两组可以使用不同
+CS/NCS。
+
+```bash
+./mutex_bench \
+  --workload two-lock \
+  --threads 64 \
+  --lock-kind mcs_tas_accordin_direct \
+  --group-a-critical-ns 3000 \
+  --group-a-outside-ns 300 \
+  --group-b-critical-ns 100 \
+  --group-b-outside-ns 3000 \
+  --duration-ms 5000 \
+  --warmup-duration-ms 1000
+```
+
+该模式会额外输出 `group_a_*`、`group_b_*`、`fairness_jain`、
+`group_a_normalized_slowdown` 和 `group_b_normalized_slowdown`。论文实验入口是
+`experiments/run_experiment_six.py`，默认运行 homogeneous、heterogeneous mild 和
+heterogeneous extreme 三组 two-lock case。
+
 ## 结果与指标
 
 ### `raw.csv`（逐次运行）
