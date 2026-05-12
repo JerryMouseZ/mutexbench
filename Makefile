@@ -8,7 +8,7 @@ TARGETS := mutex_bench curve_bench
 DEPFILES := $(TARGETS:%=%.d)
 DEPFLAGS = -MMD -MP -MF $@.d -MT $@
 
-.PHONY: all clean test-monotonic-timing test-remove-outside-iters test-two-lock-workload test-sweep-throughput-cpu test-sweep-multi-lock-direct test-sweep-multi-lock-profile-reports
+.PHONY: all clean test-monotonic-timing test-remove-outside-iters test-per-thread-ops test-two-lock-workload test-sweep-throughput-cpu test-sweep-multi-lock-direct test-sweep-multi-lock-profile-reports
 
 all: $(TARGETS)
 
@@ -28,6 +28,9 @@ test-monotonic-timing:
 
 test-remove-outside-iters: mutex_bench
 	bash scripts/test_remove_outside_iters.sh
+
+test-per-thread-ops: mutex_bench
+	bash scripts/test_mutex_bench_per_thread_ops.sh
 
 test-two-lock-workload: mutex_bench
 	bash scripts/test_mutex_bench_two_lock.sh

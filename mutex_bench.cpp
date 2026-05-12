@@ -417,6 +417,17 @@ double JainFairness(double a, double b) {
   return denominator > 0.0 ? ((a + b) * (a + b)) / denominator : 0.0;
 }
 
+void PrintPerThreadOperations(const std::vector<uint64_t> &per_thread_ops) {
+  std::cout << "per_thread_operations: ";
+  for (size_t i = 0; i < per_thread_ops.size(); ++i) {
+    if (i != 0) {
+      std::cout << ",";
+    }
+    std::cout << per_thread_ops[i];
+  }
+  std::cout << "\n";
+}
+
 template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &cfg) {
   static_assert(locks_bench::LockBench<LockBenchT>);
 
@@ -432,6 +443,7 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
   std::atomic<bool> warmup_stop{false};
   std::atomic<bool> measure_start{false};
   std::atomic<bool> measure_stop{false};
+  std::vector<uint64_t> per_thread_ops(static_cast<size_t>(cfg.threads), 0);
 
   std::vector<std::thread> workers;
   workers.reserve(static_cast<size_t>(cfg.threads));
@@ -442,7 +454,8 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
 
       uint64_t local_lock_hold_ns = 0;
       uint64_t local_lock_hold_samples = 0;
-      uint64_t local_ops = 0;
+      static thread_local uint64_t local_ops = 0;
+      local_ops = 0;
 
       workers_ready.fetch_add(1, std::memory_order_release);
       while (!warmup_start.load(std::memory_order_acquire)) {
@@ -512,6 +525,7 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
                                         std::memory_order_relaxed);
       total_thread_elapsed_ns.fetch_add(local_thread_elapsed_ns,
                                         std::memory_order_relaxed);
+      per_thread_ops[static_cast<size_t>(thread_index)] = local_ops;
       total_ops.fetch_add(local_ops, std::memory_order_relaxed);
     });
   }
@@ -581,6 +595,7 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
   std::cout << "burn_calibration_source: " << cfg.burn_calibration_source
             << "\n";
   std::cout << "total_operations: " << ops << "\n";
+  PrintPerThreadOperations(per_thread_ops);
   std::cout << std::fixed << std::setprecision(6);
   std::cout << "elapsed_seconds: " << elapsed_s << "\n";
   std::cout << std::setprecision(2);
@@ -613,6 +628,7 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
   std::atomic<bool> warmup_stop{false};
   std::atomic<bool> measure_start{false};
   std::atomic<bool> measure_stop{false};
+  std::vector<uint64_t> per_thread_ops(static_cast<size_t>(cfg.threads), 0);
 
   std::vector<std::thread> workers;
   workers.reserve(static_cast<size_t>(cfg.threads));
@@ -625,7 +641,8 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
 
         uint64_t local_lock_hold_ns = 0;
         uint64_t local_lock_hold_samples = 0;
-        uint64_t local_ops = 0;
+        static thread_local uint64_t local_ops = 0;
+        local_ops = 0;
 
         workers_ready.fetch_add(1, std::memory_order_release);
         while (!warmup_start.load(std::memory_order_acquire)) {
@@ -695,6 +712,7 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
                                                    std::memory_order_relaxed);
         counters.total_thread_elapsed_ns.fetch_add(local_thread_elapsed_ns,
                                                    std::memory_order_relaxed);
+        per_thread_ops[static_cast<size_t>(thread_index)] = local_ops;
         counters.total_ops.fetch_add(local_ops, std::memory_order_relaxed);
       });
     }
@@ -773,6 +791,7 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
   std::cout << "burn_calibration_source: " << cfg.burn_calibration_source
             << "\n";
   std::cout << "total_operations: " << ops << "\n";
+  PrintPerThreadOperations(per_thread_ops);
   std::cout << std::fixed << std::setprecision(6);
   std::cout << "elapsed_seconds: " << elapsed_s << "\n";
   std::cout << std::setprecision(2);
