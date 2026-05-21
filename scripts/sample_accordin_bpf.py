@@ -474,6 +474,8 @@ def canonical_map_name(name: str) -> str:
         return "agg_percpu_map"
     if name.startswith("ssc_vote_slot"):
         return "ssc_vote_slot_map"
+    if name.startswith("cpu_adm_dbg"):
+        return "cpu_adm_dbg_map"
     if name.startswith("task_ctx_map"):
         return "task_ctx_map"
     if name.startswith("thread_ctx_addr"):
@@ -511,6 +513,7 @@ def discover_maps_for_pid(pid: int) -> Dict[str, MapMeta]:
             "stats_map",
             "agg_percpu_map",
             "ssc_vote_slot_map",
+            "cpu_adm_dbg_map",
             "task_ctx_map",
             "thread_ctx_addr_map",
             "cpu_to_node",
@@ -543,6 +546,7 @@ def discover_maps_globally() -> Dict[str, MapMeta]:
             "stats_map",
             "agg_percpu_map",
             "ssc_vote_slot_map",
+            "cpu_adm_dbg_map",
             "task_ctx_map",
             "thread_ctx_addr_map",
             "cpu_to_node",

@@ -6,6 +6,7 @@ MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_ROOT="$(cd -- "${MUTEXBENCH_DIR}/../.." && pwd)"
 MCS_ACCORDIN_DEBUG_COUNTERS="${MCS_ACCORDIN_DEBUG_COUNTERS:-}"
 MCS_TAS_ACCORDIN_DEBUG_COUNTERS="${MCS_TAS_ACCORDIN_DEBUG_COUNTERS:-}"
+MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS="${MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-$MCS_ACCORDIN_DEBUG_COUNTERS}"
 MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS="${MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-$MCS_TAS_ACCORDIN_DEBUG_COUNTERS}"
 TTAS_ACCORDIN_DEBUG_COUNTERS="${TTAS_ACCORDIN_DEBUG_COUNTERS:-}"
 RECIPROCATING_ACCORDIN_DEBUG_COUNTERS="${RECIPROCATING_ACCORDIN_DEBUG_COUNTERS:-}"
@@ -27,16 +28,16 @@ Usage:
 Options:
   --locks CSV                Required. Comma-separated lock scripts.
                              Item format:
-                               1) builtin lock kind (native run): mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh
+                               1) builtin lock kind (native run): mutex|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh
                                2) native-mutex (alias of native:mutex)
                                3) native:<kind> where <kind> is one of
-                                  mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh
+                                  mutex|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh
                                4) /path/to/interpose_mcs.sh
                                5) mcs=/path/to/interpose_custom.sh
                                6) non-builtin short name (e.g. flexguard),
                                   resolved as $FLEXGUARD_DIR/build/interpose_<name>.sh
-                               7) mcs_accordin (run benchmark with LD_PRELOAD=libmcs_accordin.so)
-                               8) mcs_accordin_no_bpf (same as mcs_accordin with MCS_ACCORDIN_DISABLE_BPF=1)
+                               7) mcs_accordin (run benchmark with mcs_accordin_direct lock; no pthread hook)
+                               8) mcs_accordin_no_bpf (same as mcs_accordin with MCS_ACCORDIN_DIRECT_DISABLE_BPF=1)
                                9) mcs_tse (run benchmark with LD_PRELOAD=libmcs_tse.so)
                               10) mcs_tas_accordin (run benchmark with mcs_tas_accordin_direct lock; no pthread hook)
                               11) mcs_tas_accordin_no_bpf (same as mcs_tas_accordin with MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1)
@@ -48,11 +49,11 @@ Options:
                                - Builtin names always run as native locks.
                                - To run external lock with a builtin-like name,
                                  use explicit script path or name=/path/to/script.sh
-                             For mcs_accordin library path:
-                               1) use $MCS_ACCORDIN_LIB if set
-                               2) else <repo>/target/<profile>/libmcs_accordin.so
-                               3) else <repo>/target/release/libmcs_accordin.so
-                               4) else <repo>/target/debug/libmcs_accordin.so
+                             For mcs_accordin direct library path:
+                               1) use $MCS_ACCORDIN_DIRECT_LIB if set
+                               2) else <repo>/target/<profile>/libmcs_accordin_direct.so
+                               3) else <repo>/target/release/libmcs_accordin_direct.so
+                               4) else <repo>/target/debug/libmcs_accordin_direct.so
                              For mcs_tas_accordin direct library path:
                                1) use $MCS_TAS_ACCORDIN_DIRECT_LIB if set
                                2) else <repo>/target/<profile>/libmcs_tas_accordin_direct.so
@@ -238,9 +239,9 @@ resolve_preload_lib_path() {
 
 resolve_mcs_accordin_lib_path() {
   resolve_preload_lib_path \
-    "MCS_ACCORDIN_LIB" \
-    "$PROJECT_ROOT/target/release/libmcs_accordin.so" \
-    "$PROJECT_ROOT/target/debug/libmcs_accordin.so"
+    "MCS_ACCORDIN_DIRECT_LIB" \
+    "$PROJECT_ROOT/target/release/libmcs_accordin_direct.so" \
+    "$PROJECT_ROOT/target/debug/libmcs_accordin_direct.so"
 }
 
 resolve_mcs_tas_accordin_direct_lib_path() {
@@ -390,7 +391,7 @@ contains_flag() {
 is_builtin_lock_kind() {
   local kind="$1"
   case "$kind" in
-    mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcstas-next|mcstas-next-tse|twa|clh)
+    mutex|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh)
       return 0
       ;;
     *)
@@ -1547,12 +1548,12 @@ for item in "${lock_items[@]}"; do
         fi
         ;;
       mcs_accordin)
-        lock_kind="mcs_accordin"
+        lock_kind="mcs_accordin_direct"
         lock_name="mcs_accordin"
         lock_script=""
         ;;
       mcs_accordin_no_bpf)
-        lock_kind="mcs_accordin"
+        lock_kind="mcs_accordin_direct"
         lock_name="mcs_accordin_no_bpf"
         lock_script=""
         mcs_accordin_disable_bpf="1"
@@ -1641,16 +1642,16 @@ for item in "${lock_items[@]}"; do
       echo "Lock script is not executable: $lock_script" >&2
       exit 1
     fi
-  elif [[ "$lock_kind" == "mcs_accordin" ]]; then
+  elif [[ "$lock_kind" == "mcs_accordin_direct" ]]; then
     if [[ "$with_scx_lavd" == "1" ]]; then
       echo "lock=${lock_name} cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
       exit 1
     fi
-    build_perf_symbols_package_if_needed "mcs_accordin" "MCS_ACCORDIN_LIB"
+    build_perf_symbols_package_if_needed "mcs_accordin_direct" "MCS_ACCORDIN_DIRECT_LIB"
     mcs_accordin_lib="$(resolve_mcs_accordin_lib_path)"
     if [[ ! -f "$mcs_accordin_lib" ]]; then
-      echo "mcs_accordin library not found: $mcs_accordin_lib" >&2
-      echo "Build first (cargo build -p mcs_accordin --release) or set MCS_ACCORDIN_LIB to libmcs_accordin.so path." >&2
+      echo "mcs_accordin_direct library not found: $mcs_accordin_lib" >&2
+      echo "Build first (cargo build -p mcs_accordin_direct --release) or set MCS_ACCORDIN_DIRECT_LIB to libmcs_accordin_direct.so path." >&2
       exit 1
     fi
   elif [[ "$lock_kind" == "mcs_tse" ]]; then
@@ -1707,7 +1708,7 @@ for item in "${lock_items[@]}"; do
   sample_bpf_args=()
   if [[ "$sample_bpf_enabled" == "1" ]]; then
     case "$lock_kind" in
-      mcs_accordin)
+      mcs_accordin_direct)
         if [[ "$mcs_accordin_disable_bpf" != "1" ]]; then
           sample_bpf_args=(
             --sample-bpf
@@ -1748,7 +1749,7 @@ for item in "${lock_items[@]}"; do
 
   if [[ "$bpf_profile_enabled" == "1" ]]; then
     case "$lock_kind" in
-      mcs_accordin)
+      mcs_accordin_direct)
         if [[ "$mcs_accordin_disable_bpf" != "1" ]]; then
           lock_bpf_profile_enabled="1"
         fi
@@ -1782,20 +1783,19 @@ for item in "${lock_items[@]}"; do
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
-  elif [[ "$lock_kind" == "mcs_accordin" ]]; then
+  elif [[ "$lock_kind" == "mcs_accordin_direct" ]]; then
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
       "${sample_bpf_args[@]}"
-      --bench-ld-preload "$mcs_accordin_lib"
-      --lock-kind "mutex"
+      --lock-kind "mcs_accordin_direct"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
     if [[ "$mcs_accordin_disable_bpf" == "1" ]]; then
-      cmd=(env "${accordin_env_args[@]}" "MCS_ACCORDIN_DEBUG_COUNTERS=${MCS_ACCORDIN_DEBUG_COUNTERS:-}" "MCS_ACCORDIN_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "${accordin_env_args[@]}" "MCS_ACCORDIN_DIRECT_LIB=${mcs_accordin_lib}" "MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "MCS_ACCORDIN_DIRECT_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "${accordin_env_args[@]}" "MCS_ACCORDIN_DEBUG_COUNTERS=${MCS_ACCORDIN_DEBUG_COUNTERS:-}" "${cmd[@]}")
+      cmd=(env "${accordin_env_args[@]}" "MCS_ACCORDIN_DIRECT_LIB=${mcs_accordin_lib}" "MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   elif [[ "$lock_kind" == "mcs_tse" ]]; then
     cmd=(
@@ -1882,7 +1882,7 @@ for item in "${lock_items[@]}"; do
     run_cmd=(sudo -- "${cmd[@]}")
   fi
 
-  if [[ "$lock_kind" == "mcs_accordin" && "$dry_run" != "1" ]]; then
+  if [[ "$lock_kind" == "mcs_accordin_direct" && "$dry_run" != "1" ]]; then
     ensure_accordin_sched_ext_ready "$should_sudo" "$mcs_tas_accordin_sched_ext_conflict"
   elif [[ "$lock_kind" == "mcs_tas_accordin_direct" && "$dry_run" != "1" ]]; then
     ensure_accordin_sched_ext_ready "$should_sudo" "$mcs_tas_accordin_sched_ext_conflict"

@@ -6,6 +6,7 @@
 #include "clh_lock_bench.hpp"
 #include "hapax_lock_bench.hpp"
 #include "lock_kind.hpp"
+#include "mcs_accordin_direct_lock_bench.hpp"
 #include "mcs_lock_bench.hpp"
 #include "mcs_tas_accordin_direct_lock_bench.hpp"
 #include "mcs_tas_lock_bench.hpp"
@@ -28,6 +29,8 @@ template <typename Fn> decltype(auto) DispatchByLockKind(LockKind kind, Fn &&fn)
     return std::forward<Fn>(fn).template operator()<HapaxLockBench>();
   case LockKind::kMcs:
     return std::forward<Fn>(fn).template operator()<McsLockBench>();
+  case LockKind::kMcsAccordinDirect:
+    return std::forward<Fn>(fn).template operator()<McsAccordinDirectLockBench>();
   case LockKind::kMcsTas:
     return std::forward<Fn>(fn).template operator()<McsTasLockBench>();
   case LockKind::kMcsTasAccordinDirect:
