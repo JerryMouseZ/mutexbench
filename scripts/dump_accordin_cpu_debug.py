@@ -20,7 +20,6 @@ class CpuAdmissionDebug(ctypes.Structure):
     _fields_ = [
         ("inactive_enqueue", ctypes.c_uint64),
         ("inactive_local_dequeue", ctypes.c_uint64),
-        ("inactive_steal_dequeue", ctypes.c_uint64),
         ("inactive_controlled_dequeue", ctypes.c_uint64),
         ("direct_grant", ctypes.c_uint64),
         ("token_limit_reject", ctypes.c_uint64),
@@ -71,7 +70,6 @@ def read_debug_rows(meta: sampler.MapMeta) -> List[Dict[str, int]]:
             sampler.bpf_map_lookup(meta.fd, sampler.u32_key(cpu), meta.value_size)
         )
         local = int(item.inactive_local_dequeue)
-        stolen = int(item.inactive_steal_dequeue)
         controlled = int(item.inactive_controlled_dequeue)
         enqueue = int(item.inactive_enqueue)
         rows.append(
@@ -79,15 +77,14 @@ def read_debug_rows(meta: sampler.MapMeta) -> List[Dict[str, int]]:
                 "cpu": cpu,
                 "inactive_enqueue": enqueue,
                 "inactive_local_dequeue": local,
-                "inactive_steal_dequeue": stolen,
                 "inactive_controlled_dequeue": controlled,
-                "inactive_dequeue_total": local + stolen + controlled,
+                "inactive_dequeue_total": local + controlled,
                 "direct_grant": int(item.direct_grant),
                 "token_limit_reject": int(item.token_limit_reject),
                 "owner_busy_reject": int(item.owner_busy_reject),
                 "current_inactive_total": int(item.current_inactive_total),
                 "max_inactive_total": int(item.max_inactive_total),
-                "enqueue_dequeue_delta": enqueue - local - stolen - controlled,
+                "enqueue_dequeue_delta": enqueue - local - controlled,
             }
         )
     return rows
@@ -141,7 +138,6 @@ def main() -> int:
         "cpu",
         "inactive_enqueue",
         "inactive_local_dequeue",
-        "inactive_steal_dequeue",
         "inactive_controlled_dequeue",
         "inactive_dequeue_total",
         "direct_grant",
