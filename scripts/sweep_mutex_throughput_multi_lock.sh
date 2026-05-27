@@ -614,6 +614,12 @@ append_accordin_env_args() {
   if [[ -n "${K+x}" ]]; then
     env_args_ref+=("K=${K}")
   fi
+  if [[ -n "${ACCORDIN_INACTIVE_DSQ+x}" ]]; then
+    env_args_ref+=("ACCORDIN_INACTIVE_DSQ=${ACCORDIN_INACTIVE_DSQ}")
+  fi
+  if [[ -n "${ACCORDIN_EAGER_TOKEN_RELEASE+x}" ]]; then
+    env_args_ref+=("ACCORDIN_EAGER_TOKEN_RELEASE=${ACCORDIN_EAGER_TOKEN_RELEASE}")
+  fi
 }
 
 build_perf_symbols_package_if_needed() {
