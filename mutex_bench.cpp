@@ -70,8 +70,8 @@ struct Config {
       << "Usage: " << prog
       << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
       << " [--critical-ns N] [--outside-ns N] [--timing-sample-stride "
-         "N] [--lock-kind mutex|reciprocating|hapax|mcs|mcs_accordin_direct|"
-         "mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|"
+         "N] [--lock-kind mutex|pthread_spinlock|reciprocating|hapax|mcs|"
+         "mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|"
          "mcstas-next-tse|twa|clh]"
       << " [--timeslice-extension off|auto|require]"
       << " [--workload single|two-lock]"
@@ -102,7 +102,7 @@ struct Config {
       << "  --calibration-config PATH  Optional iter calibration config "
          "(default: <binary-dir>/iter_calibration.cfg)\n"
       << "  --lock-kind K      Lock kind: "
-         "mutex|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|"
+         "mutex|pthread_spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|"
          "mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|"
          "twa|clh (default: "
          "mutex)\n"
@@ -187,7 +187,7 @@ Config ParseArgs(int argc, char *argv[]) {
       const std::string lock_kind = need_next("--lock-kind");
       if (!locks_bench::TryParseLockKind(lock_kind, cfg.lock_kind)) {
         std::cerr << "Invalid value for --lock-kind: " << lock_kind
-                  << " (expected: mutex, reciprocating, hapax, mcs, "
+                  << " (expected: mutex, pthread_spinlock, reciprocating, hapax, mcs, "
                      "mcs_accordin_direct, mcs-tas, mcs-tas-tse, "
                      "mcs_tas_accordin_direct, mcstas-next, mcstas-next-tse, "
                      "twa, or clh)\n";

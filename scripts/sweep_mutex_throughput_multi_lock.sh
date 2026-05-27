@@ -28,10 +28,10 @@ Usage:
 Options:
   --locks CSV                Required. Comma-separated lock scripts.
                              Item format:
-                               1) builtin lock kind (native run): mutex|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh
+                               1) builtin lock kind (native run): mutex|pthread_spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh
                                2) native-mutex (alias of native:mutex)
                                3) native:<kind> where <kind> is one of
-                                  mutex|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh
+                                  mutex|pthread_spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh
                                4) /path/to/interpose_mcs.sh
                                5) mcs=/path/to/interpose_custom.sh
                                6) non-builtin short name (e.g. flexguard),
@@ -391,7 +391,7 @@ contains_flag() {
 is_builtin_lock_kind() {
   local kind="$1"
   case "$kind" in
-    mutex|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh)
+    mutex|pthread_spinlock|pthread-spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh)
       return 0
       ;;
     *)

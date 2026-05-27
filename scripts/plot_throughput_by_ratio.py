@@ -87,7 +87,6 @@ ACCORDIN_LOCKS = {
     "mcs_accordin",
     "mcs_tas_accordin",
     "mcs_tas_accordin_admission_only",
-    "mcs_tas_accordin_sampled",
     "mcs_tas_accordin_no_admission",
     "mcs_tas_accordin_taskset",
 }
@@ -108,7 +107,6 @@ LOCK_COLORS = {
     "mcs_accordin": "#607D8B",
     "mcs_tas_accordin": "#607D8B",
     "mcs_tas_accordin_admission_only": "#607D8B",
-    "mcs_tas_accordin_sampled": "#607D8B",
     "mcs_tas_accordin_no_admission": "#607D8B",
     "mcs_tas_accordin_taskset": "#607D8B",
 }
@@ -129,7 +127,6 @@ LOCK_LINESTYLES = {
     "mcs_accordin": "-",
     "mcs_tas_accordin": "-",
     "mcs_tas_accordin_admission_only": "-",
-    "mcs_tas_accordin_sampled": "--",
     "mcs_tas_accordin_no_admission": "--",
     "mcs_tas_accordin_taskset": "--",
 }
@@ -150,7 +147,6 @@ LOCK_MARKERS = {
     "mcs_accordin": "P",
     "mcs_tas_accordin": "P",
     "mcs_tas_accordin_admission_only": "P",
-    "mcs_tas_accordin_sampled": "*",
     "mcs_tas_accordin_no_admission": ">",
     "mcs_tas_accordin_taskset": "<",
 }
@@ -163,7 +159,6 @@ LOCK_LABELS = {
     "mcs_accordin": "Admission only",
     "mcs_tas_accordin": "Admission only",
     "mcs_tas_accordin_admission_only": "Admission only",
-    "mcs_tas_accordin_sampled": "Admission + core budget",
     "mcs_tas_accordin_no_admission": "Core budget only",
     "mcs_tas_accordin_taskset": "Profiled static-K Accordin",
 }

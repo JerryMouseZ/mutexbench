@@ -13,6 +13,7 @@
 #include "mcs_tas_tse_lock_bench.hpp"
 #include "mcstas_next_lock_bench.hpp"
 #include "mcstas_next_tse_lock_bench.hpp"
+#include "pthread_spin_lock_bench.hpp"
 #include "reciprocating_lock_bench.hpp"
 #include "std_mutex_lock_bench.hpp"
 #include "twa_lock_bench.hpp"
@@ -23,6 +24,8 @@ template <typename Fn> decltype(auto) DispatchByLockKind(LockKind kind, Fn &&fn)
   switch (kind) {
   case LockKind::kMutex:
     return std::forward<Fn>(fn).template operator()<StdMutexLockBench>();
+  case LockKind::kPthreadSpinlock:
+    return std::forward<Fn>(fn).template operator()<PthreadSpinLockBench>();
   case LockKind::kReciprocating:
     return std::forward<Fn>(fn).template operator()<ReciprocatingLockBench>();
   case LockKind::kHapax:
