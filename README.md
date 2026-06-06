@@ -39,7 +39,6 @@
 - Python 3（绘图脚本需要 `matplotlib`）
 - `pidstat`（`scripts/sweep_mutex_throughput.sh` 需要，用于记录 steady CPU）
 - 可选：`sudo`、`bpftool`（使用 `mcs_tas_accordin`、`ttas_accordin` 或部分锁脚本时可能需要）
-- 可选：`python3`（启用 `--sample-bpf` 时需要，用于记录 accordin 控制面 sampler CSV）
 
 ## 构建
 
@@ -166,8 +165,6 @@ scripts/sweep_mutex_throughput.sh \
 
 说明：该脚本会对每次运行启动 `pidstat -u -h -p <pid> 1` 采样 CPU，因此基准时长需要足够长，至少让 `pidstat` 产出一条 `%CPU` 样本。
 
-若启用 `--sample-bpf`，脚本还会为每次运行启动 `scripts/sample_accordin_bpf.py`，并在 `raw.csv` 同目录输出 `t*_c*_o*_r*.bpf_samples.csv`。该功能要求当前 sweep 以 root 身份运行（例如通过 `sudo` 调用脚本），并且仅适用于 `mcs_tas_accordin`、`ttas_accordin`、`reciprocating_accordin` 这类 accordin sched_ext 锁。
-
 ### 3) 多锁批量扫频
 
 ```bash
@@ -183,33 +180,15 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
   --output-root results-new
 ```
 
-如需同时记录 accordin 控制面 sampler：
-
-```bash
-scripts/sweep_mutex_throughput_multi_lock.sh \
-  --locks ttas_accordin \
-  --sudo-mode auto \
-  --sample-bpf \
-  --sample-bpf-layout auto \
-  --sample-bpf-interval-us 500 \
-  --threads 64 \
-  --critical-ns 350 \
-  --outside-ns 350 \
-  --duration-ms 3000 \
-  --warmup-duration-ms 50 \
-  --repeats 1 \
-  --output-root results-sampled
-```
-
 `--locks` 支持：
 
 - 内置锁名（如 `mutex,mcs,clh`）
 - `native:<kind>`
 - `name=/path/to/interpose_xxx.sh`
-- `mcs_tse`（通过 `LD_PRELOAD=target/release/libmcs_tse.so` 运行 `mutex` lock kind；可用 `MCS_TSE_LIB` 覆盖库路径，默认按 `target/release`、`target/debug` 查找；不启用 sched_ext 冲突处理或 BPF sampler）
-- `mcs_tas_accordin`（通过 `MCS_TAS_ACCORDIN_DIRECT_LIB=target/release/libmcs_tas_accordin_direct.so` 调用 `--lock-kind mcs_tas_accordin_direct`，不走 pthread hook；加 `--profile` 会保留每次运行的 `perf.data`，并生成可读的 `perf_reports/*.report.txt` / `*.script.txt`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
+- `mcs_tse`（通过 `LD_PRELOAD=target/release/libmcs_tse.so` 运行 `mutex` lock kind；可用 `MCS_TSE_LIB` 覆盖库路径，默认按 `target/release`、`target/debug` 查找；不启用 sched_ext 冲突处理）
+- `mcs_tas_accordin`（通过 `MCS_TAS_ACCORDIN_DIRECT_LIB=target/release/libmcs_tas_accordin_direct.so` 调用 `--lock-kind mcs_tas_accordin_direct`，不走 pthread hook；加 `--profile` 会保留每次运行的 `perf.data`，并生成可读的 `perf_reports/*.report.txt` / `*.script.txt`）
 - `mcs_tas_accordin_no_bpf`（同样调用 `mcs_tas_accordin_direct`，并设置 `MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data` 并生成 `perf_reports/`）
-- `ttas_accordin`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`；加 `--profile` 会保留每次运行的 `perf.data` 并生成 `perf_reports/`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
+- `ttas_accordin`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`；加 `--profile` 会保留每次运行的 `perf.data` 并生成 `perf_reports/`）
 - `ttas_accordin_no_bpf`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`，并设置 `TTAS_ACCORDIN_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data` 并生成 `perf_reports/`）
 
 并发说明：
@@ -263,11 +242,8 @@ heterogeneous extreme 三组 two-lock case。
 - `lock_hold_samples`
 - `avg_cpu_pct`
 - 可选：`perf_data_path`（启用 `--profile` 时）
-- 可选：`bpf_samples_path`、`bpf_layout`、`bpf_interval_us`（启用 `--sample-bpf` 时）
 
 其中 `avg_cpu_pct` 表示该次运行的 steady `%CPU` 均值：脚本从该 PID 的 `pidstat` 输出中取最后 `duration-ms` 对应的样本窗口再求平均，以避免把启动、预热前等待或退出清理阶段计入稳态 CPU 使用率。
-
-启用 `--sample-bpf` 时，每次运行会在 `raw.csv` 同目录额外生成一个 `t*_c*_o*_r*.bpf_samples.csv`，用于后续分析 accordin 控制面趋势。
 
 启用 `--profile` 时，多锁脚本会在每个 lock 目录下生成 `perf_reports/`：
 

@@ -81,10 +81,7 @@ Options:
                              while each BPF-backed lock sweep is running
   --bpf-profile-duration-s N Per-program bpftool profile duration in seconds (default: 2)
   --bpf-profile-programs CSV Comma-separated BPF program names to profile
-                             (default: Accordin struct_ops/syscall programs)
-  --sample-bpf               Record per-run accordin BPF sampler CSVs for BPF-backed accordin locks
-  --sample-bpf-layout MODE   Sampler layout: auto|v1|v2|legacy|current (default: auto)
-  --sample-bpf-interval-us N Sampler interval in microseconds (default: 500)
+                             (default: Accordin struct_ops programs)
   --sudo-mode MODE           MODE in {all,auto,none} (default: all)
                              all: sudo for every lock run
                              auto: sudo only for flexguard*/hybridlock*/mcs_accordin*/mcs_tas_accordin*/ttas_accordin*/reciprocating_accordin* locks
@@ -603,17 +600,6 @@ should_auto_sudo() {
   fi
 
   return 1
-}
-
-append_accordin_env_args() {
-  local -n env_args_ref="$1"
-
-  if [[ -n "${ACCORDIN_CPU_MASK_K+x}" ]]; then
-    env_args_ref+=("ACCORDIN_CPU_MASK_K=${ACCORDIN_CPU_MASK_K}")
-  fi
-  if [[ -n "${K+x}" ]]; then
-    env_args_ref+=("K=${K}")
-  fi
 }
 
 build_perf_symbols_package_if_needed() {
@@ -1299,10 +1285,7 @@ profiling_enabled="0"
 bpf_profile_enabled="0"
 bpf_profile_duration_s="2"
 bpf_profile_wait_timeout_s="10"
-bpf_profile_programs="accordin_select_cpu,accordin_enqueue,accordin_dispatch,accordin_set_active_cpus,accordin_nudge_cpu,accordin_running,accordin_tick,accordin_stopping,accordin_exit_task,accordin_init,accordin_exit"
-sample_bpf_enabled="0"
-sample_bpf_layout="auto"
-sample_bpf_interval_us="500"
+bpf_profile_programs="accordin_select_cpu,accordin_enqueue,accordin_dispatch,accordin_running,accordin_tick,accordin_stopping,accordin_exit_task,accordin_init,accordin_exit"
 sudo_mode="all"
 timeslice_extension="off"
 with_scx_lavd="0"
@@ -1352,22 +1335,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bpf-profile-programs)
       bpf_profile_programs="${2:-}"
-      shift 2
-      ;;
-    --sample-bpf)
-      if [[ $# -gt 1 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
-        echo "--sample-bpf does not take a value; use bare --sample-bpf" >&2
-        exit 1
-      fi
-      sample_bpf_enabled="1"
-      shift
-      ;;
-    --sample-bpf-layout)
-      sample_bpf_layout="${2:-}"
-      shift 2
-      ;;
-    --sample-bpf-interval-us)
-      sample_bpf_interval_us="${2:-}"
       shift 2
       ;;
     --sudo-mode)
@@ -1705,48 +1672,6 @@ for item in "${lock_items[@]}"; do
   summary_out="${lock_dir}/summary.csv"
   mkdir -p "$lock_dir"
 
-  sample_bpf_args=()
-  if [[ "$sample_bpf_enabled" == "1" ]]; then
-    case "$lock_kind" in
-      mcs_accordin_direct)
-        if [[ "$mcs_accordin_disable_bpf" != "1" ]]; then
-          sample_bpf_args=(
-            --sample-bpf
-            --sample-bpf-layout "$sample_bpf_layout"
-            --sample-bpf-interval-us "$sample_bpf_interval_us"
-          )
-        fi
-        ;;
-      mcs_tas_accordin_direct)
-        if [[ "$mcs_tas_accordin_direct_disable_bpf" != "1" ]]; then
-          sample_bpf_args=(
-            --sample-bpf
-            --sample-bpf-layout "$sample_bpf_layout"
-            --sample-bpf-interval-us "$sample_bpf_interval_us"
-          )
-        fi
-        ;;
-      ttas_accordin)
-        if [[ "$ttas_accordin_disable_bpf" != "1" ]]; then
-          sample_bpf_args=(
-            --sample-bpf
-            --sample-bpf-layout "$sample_bpf_layout"
-            --sample-bpf-interval-us "$sample_bpf_interval_us"
-          )
-        fi
-        ;;
-      reciprocating_accordin)
-        if [[ "$reciprocating_accordin_disable_bpf" != "1" ]]; then
-          sample_bpf_args=(
-            --sample-bpf
-            --sample-bpf-layout "$sample_bpf_layout"
-            --sample-bpf-interval-us "$sample_bpf_interval_us"
-          )
-        fi
-        ;;
-    esac
-  fi
-
   if [[ "$bpf_profile_enabled" == "1" ]]; then
     case "$lock_kind" in
       mcs_accordin_direct)
@@ -1772,9 +1697,6 @@ for item in "${lock_items[@]}"; do
     esac
   fi
 
-  accordin_env_args=()
-  append_accordin_env_args accordin_env_args
-
   if [[ "$lock_kind" == "native" ]]; then
     cmd=(
       "$sweep_script"
@@ -1787,15 +1709,14 @@ for item in "${lock_items[@]}"; do
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
-      "${sample_bpf_args[@]}"
       --lock-kind "mcs_accordin_direct"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
     if [[ "$mcs_accordin_disable_bpf" == "1" ]]; then
-      cmd=(env "${accordin_env_args[@]}" "MCS_ACCORDIN_DIRECT_LIB=${mcs_accordin_lib}" "MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "MCS_ACCORDIN_DIRECT_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "MCS_ACCORDIN_DIRECT_LIB=${mcs_accordin_lib}" "MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "MCS_ACCORDIN_DIRECT_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "${accordin_env_args[@]}" "MCS_ACCORDIN_DIRECT_LIB=${mcs_accordin_lib}" "MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "${cmd[@]}")
+      cmd=(env "MCS_ACCORDIN_DIRECT_LIB=${mcs_accordin_lib}" "MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   elif [[ "$lock_kind" == "mcs_tse" ]]; then
     cmd=(
@@ -1810,52 +1731,48 @@ for item in "${lock_items[@]}"; do
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
-      "${sample_bpf_args[@]}"
       --lock-kind "mcs_tas_accordin_direct"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
     if [[ "$mcs_tas_accordin_direct_disable_bpf" == "1" ]]; then
-      cmd=(env "${accordin_env_args[@]}" "MCS_TAS_ACCORDIN_DIRECT_LIB=${mcs_tas_accordin_direct_lib}" "MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "MCS_TAS_ACCORDIN_DIRECT_LIB=${mcs_tas_accordin_direct_lib}" "MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "${accordin_env_args[@]}" "MCS_TAS_ACCORDIN_DIRECT_LIB=${mcs_tas_accordin_direct_lib}" "MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "${cmd[@]}")
+      cmd=(env "MCS_TAS_ACCORDIN_DIRECT_LIB=${mcs_tas_accordin_direct_lib}" "MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS=${MCS_TAS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   elif [[ "$lock_kind" == "ttas_accordin" ]]; then
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
-      "${sample_bpf_args[@]}"
       --bench-ld-preload "$ttas_accordin_lib"
       --lock-kind "mutex"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
     if [[ "$ttas_accordin_disable_bpf" == "1" ]]; then
-      cmd=(env "${accordin_env_args[@]}" "TTAS_ACCORDIN_DEBUG_COUNTERS=${TTAS_ACCORDIN_DEBUG_COUNTERS:-}" "TTAS_ACCORDIN_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "TTAS_ACCORDIN_DEBUG_COUNTERS=${TTAS_ACCORDIN_DEBUG_COUNTERS:-}" "TTAS_ACCORDIN_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "${accordin_env_args[@]}" "TTAS_ACCORDIN_DEBUG_COUNTERS=${TTAS_ACCORDIN_DEBUG_COUNTERS:-}" "${cmd[@]}")
+      cmd=(env "TTAS_ACCORDIN_DEBUG_COUNTERS=${TTAS_ACCORDIN_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   elif [[ "$lock_kind" == "reciprocating_accordin" ]]; then
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
-      "${sample_bpf_args[@]}"
       --bench-ld-preload "$reciprocating_accordin_lib"
       --lock-kind "mutex"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
     if [[ "$reciprocating_accordin_disable_bpf" == "1" ]]; then
-      cmd=(env "${accordin_env_args[@]}" "RECIPROCATING_ACCORDIN_DEBUG_COUNTERS=${RECIPROCATING_ACCORDIN_DEBUG_COUNTERS:-}" "RECIPROCATING_ACCORDIN_DISABLE_BPF=1" "${cmd[@]}")
+      cmd=(env "RECIPROCATING_ACCORDIN_DEBUG_COUNTERS=${RECIPROCATING_ACCORDIN_DEBUG_COUNTERS:-}" "RECIPROCATING_ACCORDIN_DISABLE_BPF=1" "${cmd[@]}")
     else
-      cmd=(env "${accordin_env_args[@]}" "RECIPROCATING_ACCORDIN_DEBUG_COUNTERS=${RECIPROCATING_ACCORDIN_DEBUG_COUNTERS:-}" "${cmd[@]}")
+      cmd=(env "RECIPROCATING_ACCORDIN_DEBUG_COUNTERS=${RECIPROCATING_ACCORDIN_DEBUG_COUNTERS:-}" "${cmd[@]}")
     fi
   else
     cmd=(
       "$lock_script"
       "$sweep_script"
       "${sweep_args[@]}"
-      "${sample_bpf_args[@]}"
       --lock-kind "mutex"
       --output-raw "$raw_out"
       --output-summary "$summary_out"

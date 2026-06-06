@@ -29,9 +29,6 @@ Options:
   --timeslice-extension M      off|auto|require (default: off; ignored for *-tse lock kinds)
   --repeats N                  runs per parameter point (default: 3)
   --profile                    Record perf.data for each run and keep it beside raw.csv
-  --sample-bpf                 Record per-run accordin BPF sampler CSV beside raw.csv
-  --sample-bpf-layout MODE     Sampler layout: auto|v1|v2|legacy|current (default: auto)
-  --sample-bpf-interval-us N   Sampler interval in microseconds (default: 500)
   --output-root DIR            Output root for default raw/summary and per-run artifacts
   --output-raw PATH            raw per-run CSV (default: <mutexbench>/throughput_sweep_raw.csv)
   --output-summary PATH        aggregated CSV (default: <mutexbench>/throughput_sweep_summary.csv)
@@ -62,9 +59,6 @@ lock_kind="mutex"
 timeslice_extension="off"
 repeats="3"
 profiling_enabled="0"
-sample_bpf_enabled="0"
-sample_bpf_layout="auto"
-sample_bpf_interval_us="500"
 output_root=""
 output_raw="$MUTEXBENCH_DIR/throughput_sweep_raw.csv"
 output_summary="$MUTEXBENCH_DIR/throughput_sweep_summary.csv"
@@ -128,22 +122,6 @@ while [[ $# -gt 0 ]]; do
       fi
       profiling_enabled="1"
       shift
-      ;;
-    --sample-bpf)
-      if [[ $# -gt 1 && -n "${2:-}" && "${2:0:1}" != "-" ]]; then
-        echo "--sample-bpf does not take a value; use bare --sample-bpf" >&2
-        exit 1
-      fi
-      sample_bpf_enabled="1"
-      shift
-      ;;
-    --sample-bpf-layout)
-      sample_bpf_layout="${2:-}"
-      shift 2
-      ;;
-    --sample-bpf-interval-us)
-      sample_bpf_interval_us="${2:-}"
-      shift 2
       ;;
     --output-root)
       output_root="${2:-}"
@@ -398,33 +376,6 @@ if [[ "$profiling_enabled" == "1" ]] && ! command -v perf >/dev/null 2>&1; then
   echo "perf not found in PATH" >&2
   exit 1
 fi
-sample_bpf_script="$SCRIPT_DIR/sample_accordin_bpf.py"
-if [[ "$sample_bpf_enabled" == "1" ]]; then
-  if ! is_uint "$sample_bpf_interval_us" || [[ "$sample_bpf_interval_us" -le 0 ]]; then
-    echo "--sample-bpf-interval-us must be a positive integer" >&2
-    exit 1
-  fi
-  case "$sample_bpf_layout" in
-    auto|v1|v2|legacy|current)
-      ;;
-    *)
-      echo "--sample-bpf-layout must be one of: auto, v1, v2, legacy, current" >&2
-      exit 1
-      ;;
-  esac
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 not found in PATH" >&2
-    exit 1
-  fi
-  if [[ ! -f "$sample_bpf_script" ]]; then
-    echo "BPF sampler script not found: $sample_bpf_script" >&2
-    exit 1
-  fi
-  if [[ "$EUID" -ne 0 ]]; then
-    echo "--sample-bpf requires running sweep_mutex_throughput.sh as root (or via sudo)." >&2
-    exit 1
-  fi
-fi
 
 mkdir -p "$output_root"
 mkdir -p "$(dirname "$output_raw")"
@@ -433,9 +384,6 @@ mkdir -p "$(dirname "$output_summary")"
 raw_header="threads,critical_iters,outside_iters,repeat,throughput_ops_per_sec,elapsed_seconds,total_operations,avg_lock_hold_ns,avg_wait_ns_estimated,avg_lock_handoff_ns_estimated,lock_hold_samples,avg_cpu_pct"
 if [[ "$profiling_enabled" == "1" ]]; then
   raw_header+=",perf_data_path"
-fi
-if [[ "$sample_bpf_enabled" == "1" ]]; then
-  raw_header+=",bpf_samples_path,bpf_layout,bpf_interval_us"
 fi
 printf "%s\n" "$raw_header" > "$output_raw"
 
@@ -538,9 +486,6 @@ for t in "${threads[@]}"; do
         bench_output_path="$(mktemp)"
         pidstat_output_path="$(mktemp)"
         perf_data_path=""
-        bpf_samples_path=""
-        bpf_sampler_pid=""
-        bpf_sampler_log_path=""
         bench_start_ns=""
         bench_end_ns=""
         bench_wall_seconds=""
@@ -568,34 +513,6 @@ for t in "${threads[@]}"; do
         env LC_ALL=C pidstat -u -h -p "$bench_pid" 1 >"$pidstat_output_path" 2>&1 &
         pidstat_pid=$!
 
-        if [[ "$sample_bpf_enabled" == "1" ]]; then
-          bpf_samples_path="$output_root/t${t}_c${c}_o${o}_r${r}.bpf_samples.csv"
-          bpf_sampler_log_path="$output_root/t${t}_c${c}_o${o}_r${r}.bpf_samples.stderr"
-          sample_duration_s="$(awk -v warmup_ms="$warmup_duration_ms" -v duration_ms="$duration_ms" 'BEGIN { printf "%.3f", (warmup_ms + duration_ms) / 1000.0 + 0.250 }')"
-          sched_ext_ready="0"
-          for _ in $(seq 1 80); do
-            if [[ -r /sys/kernel/sched_ext/state ]] && [[ "$(< /sys/kernel/sched_ext/state)" == "enabled" ]]; then
-              sched_ext_ready="1"
-              break
-            fi
-            sleep 0.05
-          done
-          if [[ "$sched_ext_ready" != "1" ]]; then
-            echo "Timed out waiting for sched_ext to enable before starting BPF sampler" >&2
-            exit 1
-          fi
-          python3 "$sample_bpf_script" \
-            --layout "$sample_bpf_layout" \
-            --duration-s "$sample_duration_s" \
-            --interval-us "$sample_bpf_interval_us" \
-            --include-agg \
-            --include-slots \
-            --slot-limit 64 \
-            --output "$bpf_samples_path" \
-            > /dev/null 2>"$bpf_sampler_log_path" &
-          bpf_sampler_pid=$!
-        fi
-
         if wait "$bench_pid"; then
           bench_status=0
         else
@@ -606,20 +523,6 @@ for t in "${threads[@]}"; do
 
         kill "$pidstat_pid" >/dev/null 2>&1 || true
         wait "$pidstat_pid" >/dev/null 2>&1 || true
-        if [[ -n "$bpf_sampler_pid" ]]; then
-          sampler_done="0"
-          for _ in $(seq 1 20); do
-            if ! kill -0 "$bpf_sampler_pid" >/dev/null 2>&1; then
-              sampler_done="1"
-              break
-            fi
-            sleep 0.05
-          done
-          if [[ "$sampler_done" != "1" ]]; then
-            kill "$bpf_sampler_pid" >/dev/null 2>&1 || true
-          fi
-          wait "$bpf_sampler_pid" >/dev/null 2>&1 || true
-        fi
 
         bench_output="$(<"$bench_output_path")"
 
@@ -659,16 +562,6 @@ for t in "${threads[@]}"; do
         if [[ "$profiling_enabled" == "1" ]]; then
           restore_output_owner_if_sudo_user "$perf_data_path"
         fi
-        if [[ "$sample_bpf_enabled" == "1" && -n "$bpf_samples_path" ]]; then
-          restore_output_owner_if_sudo_user "$bpf_samples_path" "$bpf_sampler_log_path"
-          if [[ ! -s "$bpf_samples_path" ]]; then
-            echo "BPF sampler produced no data for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
-            if [[ -n "$bpf_sampler_log_path" && -s "$bpf_sampler_log_path" ]]; then
-              cat "$bpf_sampler_log_path" >&2
-            fi
-            exit 1
-          fi
-        fi
 
         if [[ -z "$throughput" || -z "$elapsed_seconds" || -z "$total_operations" || -z "$avg_lock_hold_ns" || -z "$avg_wait_ns_estimated" || -z "$avg_lock_handoff_ns_estimated" || -z "$lock_hold_samples" || -z "$avg_cpu_pct" ]]; then
           echo "Failed to parse benchmark output for threads=${t} critical=${c} outside=${o} repeat=${r}" >&2
@@ -683,9 +576,6 @@ for t in "${threads[@]}"; do
         )
         if [[ "$profiling_enabled" == "1" ]]; then
           raw_row+=("$perf_data_path")
-        fi
-        if [[ "$sample_bpf_enabled" == "1" ]]; then
-          raw_row+=("$bpf_samples_path" "$sample_bpf_layout" "$sample_bpf_interval_us")
         fi
         (
           IFS=,
