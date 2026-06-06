@@ -4,11 +4,11 @@ CXXFLAGS ?= -O3 -std=c++20 -pthread
 LDFLAGS ?=
 LDLIBS ?= -ldl
 
-TARGETS := mutex_bench curve_bench
+TARGETS := mutex_bench curve_bench multilockbench
 DEPFILES := $(TARGETS:%=%.d)
 DEPFLAGS = -MMD -MP -MF $@.d -MT $@
 
-.PHONY: all clean test-monotonic-timing test-remove-outside-iters test-per-thread-ops test-two-lock-workload test-sweep-throughput-cpu test-sweep-multi-lock-direct test-sweep-multi-lock-profile-reports
+.PHONY: all clean test-monotonic-timing test-remove-outside-iters test-per-thread-ops test-two-lock-workload test-multilockbench-zipf test-sweep-multilockbench test-sweep-throughput-cpu test-sweep-multi-lock-direct test-sweep-multi-lock-profile-reports
 
 all: $(TARGETS)
 
@@ -19,6 +19,9 @@ mutex_bench: mutex_bench.cpp
 
 curve_bench: curve_bench.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) $< -o $@ $(LDFLAGS)
+
+multilockbench: multilockbench.c
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
 clean:
 	rm -f $(TARGETS) $(DEPFILES)
@@ -34,6 +37,12 @@ test-per-thread-ops: mutex_bench
 
 test-two-lock-workload: mutex_bench
 	bash scripts/test_mutex_bench_two_lock.sh
+
+test-multilockbench-zipf: multilockbench
+	bash scripts/test_multilockbench_zipf.sh
+
+test-sweep-multilockbench: multilockbench
+	bash scripts/test_sweep_multilockbench.sh
 
 test-sweep-throughput-cpu:
 	bash scripts/test_sweep_mutex_throughput_cpu.sh

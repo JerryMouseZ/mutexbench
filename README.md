@@ -1,7 +1,7 @@
 # mutexbench
 
 一个用于评估不同互斥锁实现吞吐量与扩展性的 C++20 基准测试仓库。  
-核心程序 `mutex_bench` 支持在可配置线程数、临界区开销与非临界区开销下测量吞吐，配套脚本可批量扫频、多锁对比、结果聚合和绘图。
+核心程序 `mutex_bench` 支持在可配置线程数、临界区开销与非临界区开销下测量吞吐，`multilockbench` 支持 Zipfian 热点分布的多锁 workload，配套脚本可批量扫频、多锁对比、结果聚合和绘图。
 
 ## 功能概览
 
@@ -17,10 +17,12 @@
 .
 ├── mutex_bench.cpp                     # 主基准程序
 ├── curve_bench.cpp                     # BurnIters 开销曲线测量
+├── multilockbench.c                    # Zipfian 热点多锁基准程序
 ├── locks/                              # 各锁实现
 ├── bench/locks_bench/                  # 锁适配与调度
 ├── scripts/
 │   ├── sweep_mutex_throughput.sh       # 单锁批量扫频
+│   ├── sweep_multilockbench.sh         # Zipfian 多锁基准批量扫频
 │   ├── sweep_mutex_throughput_multi_lock.sh  # 多锁批量扫频
 │   ├── analyze_multi_lock.py           # 多锁统计分析
 │   ├── recommend_threads.py            # 推荐线程数
@@ -49,6 +51,7 @@ make
 
 - `./mutex_bench`
 - `./curve_bench`
+- `./multilockbench`
 
 ## 快速开始
 
@@ -104,6 +107,46 @@ make
 
 - 该功能依赖线程已注册的 `rseq` 区域能够暴露 `slice_ctrl` 字段；旧 glibc 即使在新内核上也可能无法使用
 - 更适合用户态自旋/队列锁（如 `mcs`、`mcs-tas`、`mcs-tas-tse`、`clh`、`twa`、`hapax`、`reciprocating`）
+
+### 1.2) Zipfian 热点多锁基准
+
+`multilockbench` 在同一个进程内创建多个独立锁，每次操作按 Zipfian 分布选择一个锁：rank 1 映射到 lock 0，因此 `per_lock_operations` 的第一个值就是默认热点锁计数。
+
+```bash
+./multilockbench \
+  --threads 32 \
+  --locks 64 \
+  --zipf-alpha 1.2 \
+  --duration-ms 5000 \
+  --warmup-duration-ms 1000 \
+  --critical-ns 300 \
+  --outside-ns 3000 \
+  --lock-kind mcs-tas
+```
+
+常用新增参数：
+
+- `--locks N` / `--num-locks N`：独立锁数量
+- `--zipf-alpha A`：热点偏斜程度，`0` 表示均匀分布，值越大越集中到低编号锁
+- `--seed N`：每线程随机数种子的基础值，便于复现实验
+
+### 1.3) Zipfian 多锁参数扫频
+
+```bash
+scripts/sweep_multilockbench.sh \
+  --lock-kinds mutex,mcs-tas \
+  --threads 16,32,64 \
+  --lock-counts 16,64 \
+  --zipf-alpha 0,1.2,2.0 \
+  --critical-ns 300 \
+  --outside-ns 3000 \
+  --duration-ms 5000 \
+  --warmup-duration-ms 1000 \
+  --repeats 3 \
+  --output-root results/multilockbench
+```
+
+该脚本输出 `raw.csv` 和 `summary.csv`；`raw.csv` 保留每次运行的 `per_lock_operations`，并用分号分隔各锁计数，便于直接检查热点分布。
 
 ### 2) 单锁参数扫频（输出 raw + summary）
 
