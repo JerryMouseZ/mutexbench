@@ -1007,7 +1007,7 @@ int RunCvPingPongBenchmarkForCond(const Config &cfg) {
 
       workers_ready.fetch_add(1, std::memory_order_release);
       while (!run_start.load(std::memory_order_acquire)) {
-        std::this_thread::yield();
+        SpinPause();
       }
 
       bool skip_latency = (thread_index == 0);
@@ -1146,7 +1146,7 @@ int RunCvBroadcastBenchmarkForCond(const Config &cfg) {
 
       workers_ready.fetch_add(1, std::memory_order_release);
       while (!run_start.load(std::memory_order_acquire)) {
-        std::this_thread::yield();
+        SpinPause();
       }
 
       cv.lock();
@@ -1204,7 +1204,7 @@ int RunCvBroadcastBenchmarkForCond(const Config &cfg) {
 
     workers_ready.fetch_add(1, std::memory_order_release);
     while (!run_start.load(std::memory_order_acquire)) {
-      std::this_thread::yield();
+      SpinPause();
     }
 
     cv.lock();
