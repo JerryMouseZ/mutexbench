@@ -55,6 +55,9 @@ struct HapaxVW {
   static inline void Pause(std::uint32_t spin_count) {
 #if defined(__x86_64__) || defined(__i386__)
     _mm_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    (void)spin_count;
+    asm volatile("yield" ::: "memory");
 #else
     if ((spin_count & 0xFFu) == 0) {
       std::this_thread::yield();

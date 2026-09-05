@@ -397,7 +397,7 @@ template <typename LockBenchT> int RunBenchmarkForLock(const Config &cfg) {
 
       workers_ready.fetch_add(1, std::memory_order_release);
       while (!warmup_start.load(std::memory_order_acquire)) {
-        std::this_thread::yield();
+        SpinPause();
       }
 
       if (cfg.warmup_duration_ms > 0) {
