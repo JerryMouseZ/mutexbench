@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "bench/burn_calibration.hpp"
+#include "bench/locks_bench/cond_bench.hpp"
 #include "bench/locks_bench/lock_bench.hpp"
 #include "bench/locks_bench/lock_dispatch.hpp"
 #include "bench/locks_bench/lock_kind.hpp"
@@ -24,7 +25,14 @@ using Clock = std::chrono::steady_clock;
 enum class WorkloadMode {
   kSingle,
   kTwoLock,
+  kCvPingPong,
+  kCvBroadcast,
 };
+
+bool IsCondWorkload(WorkloadMode workload) {
+  return workload == WorkloadMode::kCvPingPong ||
+         workload == WorkloadMode::kCvBroadcast;
+}
 
 inline void SpinPause() noexcept {
 #if defined(__x86_64__) || defined(__i386__)
@@ -54,6 +62,7 @@ struct Config {
   bool group_b_critical_explicit = false;
   bool group_b_outside_explicit = false;
   uint64_t timing_sample_stride = 8;
+  uint64_t broadcast_interval_us = 200;
   std::string calibration_config_path;
   bool calibration_config_explicit = false;
   burn_calibration::Calibration burn_calibration{
@@ -74,7 +83,8 @@ struct Config {
          "mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|"
          "mcstas-next-tse|twa|clh]"
       << " [--timeslice-extension off|auto|require]"
-      << " [--workload single|two-lock]"
+      << " [--workload single|two-lock|cv-pingpong|cv-broadcast]"
+      << " [--broadcast-interval-us N]"
       << " [--group-a-critical-ns N] [--group-a-outside-ns N]"
       << " [--group-b-critical-ns N] [--group-b-outside-ns N]\n"
       << "  --threads N       Number of worker threads (default: 4)\n"
@@ -87,8 +97,16 @@ struct Config {
       << "  --outside-ns N    Requested non-critical-section burn time in "
          "nanoseconds (default: 100)\n"
       << "  --critical-iters N  Legacy alias for --critical-ns\n"
-      << "  --workload MODE  Workload shape: single or two-lock (default: "
-         "single)\n"
+      << "  --workload MODE  Workload shape: single, two-lock, cv-pingpong, or "
+         "cv-broadcast (default: single)\n"
+      << "                   cv-pingpong: token ring over one mutex and one "
+         "condition variable per thread; every handoff is wait -> signal\n"
+      << "                   cv-broadcast: waiters block on one condition "
+         "variable until a coordinator bumps a generation and broadcasts\n"
+      << "                   cv workloads support these lock kinds: "
+      << locks_bench::SupportedCondLockKinds() << "\n"
+      << "  --broadcast-interval-us N  Coordinator broadcast period for the "
+         "cv-broadcast workload (default: 200)\n"
       << "  --group-a-critical-ns N  Group A critical-section burn time for "
          "two-lock workload\n"
       << "  --group-a-outside-ns N   Group A non-critical-section burn time for "
@@ -156,11 +174,19 @@ Config ParseArgs(int argc, char *argv[]) {
         cfg.workload = WorkloadMode::kSingle;
       } else if (workload == "two-lock") {
         cfg.workload = WorkloadMode::kTwoLock;
+      } else if (workload == "cv-pingpong") {
+        cfg.workload = WorkloadMode::kCvPingPong;
+      } else if (workload == "cv-broadcast") {
+        cfg.workload = WorkloadMode::kCvBroadcast;
       } else {
         std::cerr << "Invalid value for --workload: " << workload
-                  << " (expected: single or two-lock)\n";
+                  << " (expected: single, two-lock, cv-pingpong, or "
+                     "cv-broadcast)\n";
         std::exit(1);
       }
+    } else if (arg == "--broadcast-interval-us") {
+      cfg.broadcast_interval_us = ParseU64(need_next("--broadcast-interval-us"),
+                                           "--broadcast-interval-us");
     } else if (arg == "--group-a-critical-ns") {
       cfg.group_a_critical_ns =
           ParseU64(need_next("--group-a-critical-ns"), "--group-a-critical-ns");
@@ -244,6 +270,30 @@ Config ParseArgs(int argc, char *argv[]) {
   if (cfg.workload == WorkloadMode::kTwoLock && (cfg.threads % 2) != 0) {
     std::cerr << "--workload two-lock requires an even --threads value so "
                  "each group receives half of the workers\n";
+    std::exit(1);
+  }
+  if (cfg.workload == WorkloadMode::kCvPingPong && cfg.threads < 2) {
+    std::cerr << "--workload cv-pingpong requires --threads >= 2 so the token "
+                 "can be handed off\n";
+    std::exit(1);
+  }
+  if (cfg.workload == WorkloadMode::kCvBroadcast &&
+      cfg.broadcast_interval_us == 0) {
+    std::cerr << "--broadcast-interval-us must be > 0\n";
+    std::exit(1);
+  }
+  if (IsCondWorkload(cfg.workload) &&
+      !locks_bench::CondBenchSupportsLockKind(cfg.lock_kind)) {
+    std::cerr << "--lock-kind " << locks_bench::LockKindToString(cfg.lock_kind)
+              << " has no condition-variable backend; condition-variable "
+                 "workloads support these lock kinds: "
+              << locks_bench::SupportedCondLockKinds() << "\n";
+    std::exit(1);
+  }
+  if (IsCondWorkload(cfg.workload) &&
+      cfg.timeslice_extension_mode != locks_bench::TimesliceExtensionMode::kOff) {
+    std::cerr << "--timeslice-extension is not supported by condition-variable "
+                 "workloads; use --timeslice-extension off\n";
     std::exit(1);
   }
   return cfg;
@@ -429,6 +479,121 @@ void PrintPerThreadOperations(const std::vector<uint64_t> &per_thread_ops) {
     std::cout << per_thread_ops[i];
   }
   std::cout << "\n";
+}
+
+// Keeps a bounded, uniformly decimated sample of a latency stream so long runs
+// cannot grow without bound while percentiles still cover the whole run.
+class LatencySamples {
+public:
+  void Add(uint64_t value_ns) {
+    ++observed_;
+    if (++since_kept_ < stride_) {
+      return;
+    }
+    since_kept_ = 0;
+    samples_.push_back(value_ns);
+    if (samples_.size() >= kMaxSamples) {
+      Decimate();
+    }
+  }
+
+  uint64_t observed() const { return observed_; }
+  const std::vector<uint64_t> &samples() const { return samples_; }
+
+private:
+  static constexpr size_t kMaxSamples = 1u << 20;
+
+  void Decimate() {
+    size_t out = 0;
+    for (size_t i = 1; i < samples_.size(); i += 2) {
+      samples_[out++] = samples_[i];
+    }
+    samples_.resize(out);
+    stride_ *= 2;
+  }
+
+  std::vector<uint64_t> samples_;
+  uint64_t observed_ = 0;
+  uint64_t since_kept_ = 0;
+  uint64_t stride_ = 1;
+};
+
+struct LatencyStats {
+  uint64_t observed = 0;
+  uint64_t samples = 0;
+  double avg_ns = 0.0;
+  uint64_t min_ns = 0;
+  uint64_t p50_ns = 0;
+  uint64_t p90_ns = 0;
+  uint64_t p99_ns = 0;
+  uint64_t p999_ns = 0;
+  uint64_t max_ns = 0;
+};
+
+uint64_t PercentileNs(const std::vector<uint64_t> &sorted, uint64_t per_mille) {
+  if (sorted.empty()) {
+    return 0;
+  }
+  const uint64_t count = static_cast<uint64_t>(sorted.size());
+  uint64_t rank = (count * per_mille + 999) / 1000;
+  if (rank == 0) {
+    rank = 1;
+  }
+  if (rank > count) {
+    rank = count;
+  }
+  return sorted[static_cast<size_t>(rank - 1)];
+}
+
+LatencyStats ComputeLatencyStats(std::vector<uint64_t> values,
+                                 uint64_t observed) {
+  LatencyStats stats;
+  stats.observed = observed;
+  stats.samples = static_cast<uint64_t>(values.size());
+  if (values.empty()) {
+    return stats;
+  }
+  std::sort(values.begin(), values.end());
+  double sum = 0.0;
+  for (const uint64_t value : values) {
+    sum += static_cast<double>(value);
+  }
+  stats.avg_ns = sum / static_cast<double>(values.size());
+  stats.min_ns = values.front();
+  stats.max_ns = values.back();
+  stats.p50_ns = PercentileNs(values, 500);
+  stats.p90_ns = PercentileNs(values, 900);
+  stats.p99_ns = PercentileNs(values, 990);
+  stats.p999_ns = PercentileNs(values, 999);
+  return stats;
+}
+
+LatencyStats MergeLatencyStats(const std::vector<LatencySamples> &per_thread) {
+  std::vector<uint64_t> merged;
+  uint64_t observed = 0;
+  size_t total = 0;
+  for (const auto &thread_samples : per_thread) {
+    total += thread_samples.samples().size();
+  }
+  merged.reserve(total);
+  for (const auto &thread_samples : per_thread) {
+    observed += thread_samples.observed();
+    merged.insert(merged.end(), thread_samples.samples().begin(),
+                  thread_samples.samples().end());
+  }
+  return ComputeLatencyStats(std::move(merged), observed);
+}
+
+void PrintLatencyStats(const char *prefix, const LatencyStats &stats) {
+  std::cout << prefix << "_observed: " << stats.observed << "\n";
+  std::cout << prefix << "_samples: " << stats.samples << "\n";
+  std::cout << prefix << "_avg_ns: " << stats.avg_ns << "\n";
+  std::cout << prefix << "_min_ns: " << stats.min_ns << "\n";
+  std::cout << prefix << "_p50_ns: " << stats.p50_ns << "\n";
+  std::cout << prefix << "_p90_ns: " << stats.p90_ns << "\n";
+  std::cout << prefix << "_p99_ns: " << stats.p99_ns << "\n";
+  std::cout << prefix << "_p999_ns: " << stats.p999_ns << "\n";
+  std::cout << prefix << "_max_ns: " << stats.max_ns << "\n";
 }
 
 template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &cfg) {
@@ -811,6 +976,338 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
   return 0;
 }
 
+// Threads form a ring: the token owner burns the critical section, hands the
+// token to the next thread and signals that thread's condition variable, so
+// every operation is a wait -> signal handoff over one shared mutex.
+template <typename CondBenchT>
+int RunCvPingPongBenchmarkForCond(const Config &cfg) {
+  static_assert(locks_bench::CondBench<CondBenchT>);
+
+  const size_t thread_count = static_cast<size_t>(cfg.threads);
+  CondBenchT cv(thread_count);
+
+  size_t token_owner = 0;
+  bool stop = false;
+  std::vector<Clock::time_point> signal_ts(thread_count);
+
+  std::atomic<int> workers_ready{0};
+  std::atomic<bool> run_start{false};
+  std::atomic<bool> measuring{false};
+  std::vector<uint64_t> per_thread_ops(thread_count, 0);
+  std::vector<LatencySamples> wake_latency(thread_count);
+
+  std::vector<std::thread> workers;
+  workers.reserve(thread_count);
+
+  for (size_t t = 0; t < thread_count; ++t) {
+    workers.emplace_back([&, thread_index = t]() {
+      cv.prepare_thread();
+      uint64_t local_ops = 0;
+      LatencySamples &local_wake_latency = wake_latency[thread_index];
+
+      workers_ready.fetch_add(1, std::memory_order_release);
+      while (!run_start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+
+      bool skip_latency = (thread_index == 0);
+      cv.lock();
+      for (;;) {
+        while (token_owner != thread_index && !stop) {
+          cv.wait(thread_index);
+        }
+        if (stop) {
+          break;
+        }
+
+        const auto acquired = Clock::now();
+        if (measuring.load(std::memory_order_relaxed) && !skip_latency) {
+          const auto wake_ns =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  acquired - signal_ts[thread_index])
+                  .count();
+          if (wake_ns >= 0) {
+            local_wake_latency.Add(static_cast<uint64_t>(wake_ns));
+          }
+          ++local_ops;
+        }
+        skip_latency = false;
+
+        BurnIters(cfg.critical_ns, cfg.burn_calibration);
+
+        const size_t next = (thread_index + 1) % thread_count;
+        token_owner = next;
+        signal_ts[next] = Clock::now();
+        cv.signal(next);
+        cv.unlock();
+
+        BurnIters(cfg.outside_ns, cfg.burn_calibration);
+        cv.lock();
+      }
+      cv.unlock();
+
+      per_thread_ops[thread_index] = local_ops;
+    });
+  }
+
+  while (workers_ready.load(std::memory_order_acquire) <
+         static_cast<int>(thread_count)) {
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
+  }
+
+  run_start.store(true, std::memory_order_release);
+  if (cfg.warmup_duration_ms > 0) {
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(cfg.warmup_duration_ms));
+  }
+
+  const auto start = Clock::now();
+  measuring.store(true, std::memory_order_relaxed);
+  std::this_thread::sleep_for(std::chrono::milliseconds(cfg.duration_ms));
+  measuring.store(false, std::memory_order_relaxed);
+  const auto end = Clock::now();
+
+  cv.lock();
+  stop = true;
+  for (size_t i = 0; i < thread_count; ++i) {
+    cv.broadcast(i);
+  }
+  cv.unlock();
+
+  for (auto &th : workers) {
+    th.join();
+  }
+
+  const double elapsed_s =
+      std::chrono::duration_cast<std::chrono::duration<double>>(end - start)
+          .count();
+  uint64_t handoffs = 0;
+  for (const uint64_t ops : per_thread_ops) {
+    handoffs += ops;
+  }
+  const LatencyStats wake_stats = MergeLatencyStats(wake_latency);
+  const double throughput = SafeDivide(handoffs, elapsed_s);
+
+  std::cout << "workload: cv-pingpong\n";
+  std::cout << "cond_backend: " << CondBenchT::name() << "\n";
+  std::cout << "threads: " << cfg.threads << "\n";
+  std::cout << "critical_ns: " << cfg.critical_ns << "\n";
+  std::cout << "outside_ns: " << cfg.outside_ns << "\n";
+  std::cout << "burn_calibration: "
+            << burn_calibration::ToString(cfg.burn_calibration) << "\n";
+  std::cout << "burn_calibration_source: " << cfg.burn_calibration_source
+            << "\n";
+  std::cout << "total_operations: " << handoffs << "\n";
+  PrintPerThreadOperations(per_thread_ops);
+  std::cout << std::fixed << std::setprecision(6);
+  std::cout << "elapsed_seconds: " << elapsed_s << "\n";
+  std::cout << std::setprecision(2);
+  std::cout << "throughput_ops_per_sec: " << throughput << "\n";
+  std::cout << "handoffs: " << handoffs << "\n";
+  std::cout << "handoffs_per_sec: " << throughput << "\n";
+  PrintLatencyStats("wake_latency", wake_stats);
+  return 0;
+}
+
+// One coordinator bumps a generation counter and broadcasts on a fixed period;
+// every waiter must re-acquire the shared mutex, observe the new generation and
+// go back to waiting.
+template <typename CondBenchT>
+int RunCvBroadcastBenchmarkForCond(const Config &cfg) {
+  static_assert(locks_bench::CondBench<CondBenchT>);
+
+  constexpr size_t kWaiterCond = 0;
+  constexpr size_t kCoordinatorCond = 1;
+  const size_t waiter_count = static_cast<size_t>(cfg.threads);
+  CondBenchT cv(2);
+
+  uint64_t generation = 0;
+  size_t arrived = 0;
+  size_t registered = 0;
+  bool stop = false;
+  Clock::time_point broadcast_ts;
+  LatencySamples completion_latency;
+
+  std::atomic<int> workers_ready{0};
+  std::atomic<bool> run_start{false};
+  std::atomic<bool> measuring{false};
+  std::atomic<uint64_t> total_broadcasts{0};
+  std::vector<uint64_t> per_thread_ops(waiter_count, 0);
+  std::vector<LatencySamples> wake_latency(waiter_count);
+
+  std::vector<std::thread> workers;
+  workers.reserve(waiter_count + 1);
+
+  for (size_t t = 0; t < waiter_count; ++t) {
+    workers.emplace_back([&, thread_index = t]() {
+      cv.prepare_thread();
+      uint64_t local_ops = 0;
+      LatencySamples &local_wake_latency = wake_latency[thread_index];
+
+      workers_ready.fetch_add(1, std::memory_order_release);
+      while (!run_start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+
+      cv.lock();
+      uint64_t observed_generation = generation;
+      ++registered;
+      if (registered == waiter_count) {
+        cv.signal(kCoordinatorCond);
+      }
+
+      for (;;) {
+        while (generation == observed_generation && !stop) {
+          cv.wait(kWaiterCond);
+        }
+        if (stop) {
+          break;
+        }
+
+        const auto acquired = Clock::now();
+        observed_generation = generation;
+        const auto wake_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(acquired -
+                                                                 broadcast_ts)
+                .count();
+        const bool measure = measuring.load(std::memory_order_relaxed);
+        if (measure) {
+          if (wake_ns >= 0) {
+            local_wake_latency.Add(static_cast<uint64_t>(wake_ns));
+          }
+          ++local_ops;
+        }
+
+        ++arrived;
+        if (arrived == waiter_count) {
+          if (measure && wake_ns >= 0) {
+            completion_latency.Add(static_cast<uint64_t>(wake_ns));
+          }
+          cv.signal(kCoordinatorCond);
+        }
+
+        BurnIters(cfg.critical_ns, cfg.burn_calibration);
+        cv.unlock();
+
+        BurnIters(cfg.outside_ns, cfg.burn_calibration);
+        cv.lock();
+      }
+      cv.unlock();
+
+      per_thread_ops[thread_index] = local_ops;
+    });
+  }
+
+  workers.emplace_back([&]() {
+    cv.prepare_thread();
+    uint64_t local_broadcasts = 0;
+
+    workers_ready.fetch_add(1, std::memory_order_release);
+    while (!run_start.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+
+    cv.lock();
+    while (registered < waiter_count && !stop) {
+      cv.wait(kCoordinatorCond);
+    }
+    arrived = waiter_count;
+
+    for (;;) {
+      while (arrived < waiter_count && !stop) {
+        cv.wait(kCoordinatorCond);
+      }
+      if (stop) {
+        break;
+      }
+      cv.unlock();
+
+      std::this_thread::sleep_for(
+          std::chrono::microseconds(cfg.broadcast_interval_us));
+
+      cv.lock();
+      if (stop) {
+        break;
+      }
+      arrived = 0;
+      ++generation;
+      broadcast_ts = Clock::now();
+      if (measuring.load(std::memory_order_relaxed)) {
+        ++local_broadcasts;
+      }
+      cv.broadcast(kWaiterCond);
+    }
+    cv.unlock();
+
+    total_broadcasts.store(local_broadcasts, std::memory_order_relaxed);
+  });
+
+  while (workers_ready.load(std::memory_order_acquire) <
+         static_cast<int>(waiter_count + 1)) {
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
+  }
+
+  run_start.store(true, std::memory_order_release);
+  if (cfg.warmup_duration_ms > 0) {
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(cfg.warmup_duration_ms));
+  }
+
+  const auto start = Clock::now();
+  measuring.store(true, std::memory_order_relaxed);
+  std::this_thread::sleep_for(std::chrono::milliseconds(cfg.duration_ms));
+  measuring.store(false, std::memory_order_relaxed);
+  const auto end = Clock::now();
+
+  cv.lock();
+  stop = true;
+  cv.broadcast(kWaiterCond);
+  cv.broadcast(kCoordinatorCond);
+  cv.unlock();
+
+  for (auto &th : workers) {
+    th.join();
+  }
+
+  const double elapsed_s =
+      std::chrono::duration_cast<std::chrono::duration<double>>(end - start)
+          .count();
+  uint64_t wakeups = 0;
+  for (const uint64_t ops : per_thread_ops) {
+    wakeups += ops;
+  }
+  const uint64_t broadcasts = total_broadcasts.load(std::memory_order_relaxed);
+  const LatencyStats wake_stats = MergeLatencyStats(wake_latency);
+  const LatencyStats completion_stats = ComputeLatencyStats(
+      completion_latency.samples(), completion_latency.observed());
+  const double throughput = SafeDivide(wakeups, elapsed_s);
+
+  std::cout << "workload: cv-broadcast\n";
+  std::cout << "cond_backend: " << CondBenchT::name() << "\n";
+  std::cout << "threads: " << cfg.threads << "\n";
+  std::cout << "cv_waiter_threads: " << waiter_count << "\n";
+  std::cout << "cv_coordinator_threads: 1\n";
+  std::cout << "broadcast_interval_us: " << cfg.broadcast_interval_us << "\n";
+  std::cout << "critical_ns: " << cfg.critical_ns << "\n";
+  std::cout << "outside_ns: " << cfg.outside_ns << "\n";
+  std::cout << "burn_calibration: "
+            << burn_calibration::ToString(cfg.burn_calibration) << "\n";
+  std::cout << "burn_calibration_source: " << cfg.burn_calibration_source
+            << "\n";
+  std::cout << "total_operations: " << wakeups << "\n";
+  PrintPerThreadOperations(per_thread_ops);
+  std::cout << std::fixed << std::setprecision(6);
+  std::cout << "elapsed_seconds: " << elapsed_s << "\n";
+  std::cout << std::setprecision(2);
+  std::cout << "throughput_ops_per_sec: " << throughput << "\n";
+  std::cout << "broadcasts: " << broadcasts << "\n";
+  std::cout << "broadcasts_per_sec: " << SafeDivide(broadcasts, elapsed_s)
+            << "\n";
+  PrintLatencyStats("broadcast_completion", completion_stats);
+  PrintLatencyStats("wake_latency", wake_stats);
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
   Config cfg = ParseArgs(argc, argv);
   if (!ApplyCalibrationConfig(&cfg, argv[0])) {
@@ -846,6 +1343,16 @@ int main(int argc, char *argv[]) {
         std::cerr << "\n";
       }
     }
+  }
+
+  if (IsCondWorkload(cfg.workload)) {
+    return locks_bench::DispatchByCondLockKind(
+        cfg.lock_kind, [&]<typename CondBenchT>() {
+          if (cfg.workload == WorkloadMode::kCvBroadcast) {
+            return RunCvBroadcastBenchmarkForCond<CondBenchT>(cfg);
+          }
+          return RunCvPingPongBenchmarkForCond<CondBenchT>(cfg);
+        });
   }
 
   return locks_bench::DispatchByLockKind(cfg.lock_kind, [&]<typename LockBenchT>() {

@@ -13,10 +13,16 @@ namespace locks_bench {
 class McsTasAccordinDirectLibrary {
 public:
   using MutexPtr = void *;
+  using CondPtr = void *;
   using CreateFn = MutexPtr (*)();
   using DestroyFn = int (*)(MutexPtr);
   using LockFn = int (*)(MutexPtr);
   using UnlockFn = int (*)(MutexPtr);
+  using CondCreateFn = CondPtr (*)();
+  using CondDestroyFn = int (*)(CondPtr);
+  using CondWaitFn = int (*)(CondPtr, MutexPtr);
+  using CondSignalFn = int (*)(CondPtr);
+  using CondBroadcastFn = int (*)(CondPtr);
 
   static const McsTasAccordinDirectLibrary &instance() {
     static const McsTasAccordinDirectLibrary library;
@@ -27,6 +33,20 @@ public:
   int destroy(MutexPtr mutex) const { return destroy_(mutex); }
   int lock(MutexPtr mutex) const { return lock_(mutex); }
   int unlock(MutexPtr mutex) const { return unlock_(mutex); }
+
+  bool has_cond() const {
+    return cond_create_ != nullptr && cond_destroy_ != nullptr &&
+           cond_wait_ != nullptr && cond_signal_ != nullptr &&
+           cond_broadcast_ != nullptr;
+  }
+
+  CondPtr cond_create() const { return cond_create_(); }
+  int cond_destroy(CondPtr cond) const { return cond_destroy_(cond); }
+  int cond_wait(CondPtr cond, MutexPtr mutex) const {
+    return cond_wait_(cond, mutex);
+  }
+  int cond_signal(CondPtr cond) const { return cond_signal_(cond); }
+  int cond_broadcast(CondPtr cond) const { return cond_broadcast_(cond); }
 
   [[noreturn]] static void fail(const std::string &message) {
     std::cerr << "mcs_tas_accordin_direct: " << message << "\n";
@@ -41,7 +61,17 @@ private:
             "mcs_tas_accordin_direct_mutex_destroy")),
         lock_(load_symbol<LockFn>("mcs_tas_accordin_direct_mutex_lock")),
         unlock_(load_symbol<UnlockFn>(
-            "mcs_tas_accordin_direct_mutex_unlock")) {}
+            "mcs_tas_accordin_direct_mutex_unlock")),
+        cond_create_(
+            optional_symbol<CondCreateFn>("mcs_tas_accordin_direct_cond_create")),
+        cond_destroy_(optional_symbol<CondDestroyFn>(
+            "mcs_tas_accordin_direct_cond_destroy")),
+        cond_wait_(
+            optional_symbol<CondWaitFn>("mcs_tas_accordin_direct_cond_wait")),
+        cond_signal_(optional_symbol<CondSignalFn>(
+            "mcs_tas_accordin_direct_cond_signal")),
+        cond_broadcast_(optional_symbol<CondBroadcastFn>(
+            "mcs_tas_accordin_direct_cond_broadcast")) {}
 
   static void *open_library() {
     const char *lib_path = std::getenv("MCS_TAS_ACCORDIN_DIRECT_LIB");
@@ -69,11 +99,25 @@ private:
     return reinterpret_cast<Fn>(symbol);
   }
 
+  template <typename Fn> Fn optional_symbol(const char *name) const {
+    dlerror();
+    void *symbol = dlsym(handle_, name);
+    if (dlerror() != nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<Fn>(symbol);
+  }
+
   void *handle_;
   CreateFn create_;
   DestroyFn destroy_;
   LockFn lock_;
   UnlockFn unlock_;
+  CondCreateFn cond_create_;
+  CondDestroyFn cond_destroy_;
+  CondWaitFn cond_wait_;
+  CondSignalFn cond_signal_;
+  CondBroadcastFn cond_broadcast_;
 };
 
 struct McsTasAccordinDirectLockBench {
