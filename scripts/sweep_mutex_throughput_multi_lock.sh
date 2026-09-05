@@ -104,6 +104,8 @@ Options:
   -h, --help                 Show this help
 
 All unknown args are forwarded to sweep script.
+This includes repeatable --bench-env KEY=VALUE, which the sweep script applies only to
+the benchmark binary (e.g. --bench-env ACCORDIN_WIDTH_CONTROL=1).
 This script serializes globally with flock so concurrent invocations queue.
 Default queue lock file: /tmp/mutexbench-sweep-multi-lock.lock
 Override queue lock file with env: MUTEXBENCH_MULTI_LOCK_LOCK_FILE=/path/to/lock

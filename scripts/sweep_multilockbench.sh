@@ -13,6 +13,8 @@ Usage:
 
 Options:
   --binary PATH                Benchmark binary path (default: <mutexbench>/multilockbench)
+  --bench-env KEY=VALUE        Set an extra environment variable only for benchmark binary
+                               execution; repeatable, applied in the order given
   --calibration-config PATH    Pass an explicit iter calibration config to multilockbench
   --lock-kinds CSV             Lock kinds to sweep (default: mutex)
   --lock-kind K                Alias for --lock-kinds K
@@ -48,6 +50,7 @@ EOF
 }
 
 binary="$MUTEXBENCH_DIR/multilockbench"
+declare -a bench_env_args=()
 calibration_config=""
 lock_kinds_csv="mutex"
 threads_csv="1,2,4,8,16,32,64"
@@ -69,6 +72,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --binary)
       binary="${2:-}"
+      shift 2
+      ;;
+    --bench-env)
+      bench_env_args+=("${2:-}")
       shift 2
       ;;
     --calibration-config)
@@ -155,6 +162,11 @@ is_uint() {
 is_float() {
   local value="$1"
   [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]
+}
+
+is_env_assignment() {
+  local value="$1"
+  [[ "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]
 }
 
 expand_home() {
@@ -330,6 +342,12 @@ if ! is_uint "$repeats" || [[ "$repeats" -eq 0 ]]; then
   echo "--repeats must be an integer > 0" >&2
   exit 1
 fi
+for bench_env_arg in "${bench_env_args[@]}"; do
+  if ! is_env_assignment "$bench_env_arg"; then
+    echo "--bench-env must be KEY=VALUE with KEY matching [A-Za-z_][A-Za-z0-9_]*, got: $bench_env_arg" >&2
+    exit 1
+  fi
+done
 
 declare -a lock_kinds=()
 declare -a threads=()
@@ -424,7 +442,11 @@ for lock_kind in "${lock_kinds[@]}"; do
                 bench_cmd+=( --calibration-config "$calibration_config" )
               fi
 
-              bench_output="$("${bench_cmd[@]}")"
+              if [[ ${#bench_env_args[@]} -gt 0 ]]; then
+                bench_output="$(env "${bench_env_args[@]}" "${bench_cmd[@]}")"
+              else
+                bench_output="$("${bench_cmd[@]}")"
+              fi
 
               throughput="$(extract_metric "$bench_output" "throughput_ops_per_sec")"
               elapsed_seconds="$(extract_metric "$bench_output" "elapsed_seconds")"

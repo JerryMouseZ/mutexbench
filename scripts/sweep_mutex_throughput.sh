@@ -17,6 +17,8 @@ Usage:
 Options:
   --binary PATH                Benchmark binary path (default: <mutexbench>/mutex_bench)
   --bench-ld-preload PATH      Set LD_PRELOAD only for benchmark binary execution
+  --bench-env KEY=VALUE        Set an extra environment variable only for benchmark binary
+                               execution; repeatable, applied in the order given
   --calibration-config PATH    Pass an explicit iter calibration config to mutex_bench
   --threads CSV                Thread counts, comma-separated (default: 1,2,4,8,16)
   --critical-ns CSV            Critical-section burn time in ns (default: 10,50,100,200,500)
@@ -44,6 +46,8 @@ Example:
     --outside-ns 10,100,500 \
     --duration-ms 1000 \
     --repeats 5 \
+    --bench-env MCS_TAS_ACCORDIN_DIRECT_LIB=target/release/libmcs_tas_accordin_direct.so \
+    --bench-env ACCORDIN_WIDTH_CONTROL=1 \
     --output-raw results/raw.csv \
     --output-summary results/summary.csv
 EOF
@@ -51,6 +55,7 @@ EOF
 
 binary="$MUTEXBENCH_DIR/mutex_bench"
 bench_ld_preload=""
+declare -a bench_env_overrides=()
 calibration_config=""
 threads_csv="1,2,4,8,16,32,64"
 critical_iters_csv="10,50,100,200,500,1000,2000"
@@ -79,6 +84,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bench-ld-preload)
       bench_ld_preload="${2:-}"
+      shift 2
+      ;;
+    --bench-env)
+      bench_env_overrides+=("${2:-}")
       shift 2
       ;;
     --calibration-config)
@@ -174,6 +183,11 @@ done
 is_uint() {
   local value="$1"
   [[ "$value" =~ ^[0-9]+$ ]]
+}
+
+is_env_assignment() {
+  local value="$1"
+  [[ "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]
 }
 
 expand_home() {
@@ -349,6 +363,12 @@ if ! is_uint "$repeats" || [[ "$repeats" -eq 0 ]]; then
   echo "--repeats must be an integer > 0" >&2
   exit 1
 fi
+for bench_env_override in "${bench_env_overrides[@]}"; do
+  if ! is_env_assignment "$bench_env_override"; then
+    echo "--bench-env must be KEY=VALUE with KEY matching [A-Za-z_][A-Za-z0-9_]*, got: $bench_env_override" >&2
+    exit 1
+  fi
+done
 declare -a threads=()
 declare -a critical_iters=()
 declare -a outside_iters=()
@@ -549,6 +569,9 @@ for t in "${threads[@]}"; do
 
         if [[ -n "$bench_ld_preload" ]]; then
           bench_env_args+=("LD_PRELOAD=$bench_ld_preload")
+        fi
+        if [[ ${#bench_env_overrides[@]} -gt 0 ]]; then
+          bench_env_args+=("${bench_env_overrides[@]}")
         fi
         bench_start_ns="$(date +%s%N)"
         if [[ "$profiling_enabled" == "1" ]]; then
