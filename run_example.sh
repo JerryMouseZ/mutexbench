@@ -1,5 +1,5 @@
   ./scripts/sweep_mutex_throughput_multi_lock.sh \
-    --locks mcs,mcs-tas,flexguard,mcs_tas_accordin \
+    --locks litl:mbmcs_original,litl:mbmcstas_original,litl:flexguard_original,mcs_tas_accordin \
     --profile \
   --sample-bpf \
     --outside-ns 350,2800 \
@@ -7,5 +7,4 @@
     --repeats 3 \
     --duration-ms 3000 \
     --warmup-duration-ms 1000 \
-    --output-root results_new \
-    --timeslice-extension require
+    --output-root results_new

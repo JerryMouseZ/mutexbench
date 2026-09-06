@@ -26,7 +26,6 @@
 
 #include "bench/burn_calibration.hpp"
 #include "bench/locks_bench/lock_bench.hpp"
-#include "bench/locks_bench/lock_dispatch.hpp"
 #include "bench/locks_bench/lock_kind.hpp"
 
 using Clock = std::chrono::steady_clock;
@@ -116,8 +115,6 @@ struct Config {
       kDefaultBurnCalibrationNumerator, kDefaultBurnCalibrationDenominator};
   std::string burn_calibration_source = "compiled-default";
   locks_bench::LockKind lock_kind = locks_bench::LockKind::kMutex;
-  locks_bench::TimesliceExtensionMode timeslice_extension_mode =
-      locks_bench::TimesliceExtensionMode::kOff;
 };
 
 [[noreturn]] void PrintUsageAndExit(const char *prog) {
@@ -133,10 +130,7 @@ struct Config {
       << " [--work-kind spin|nanosleep|pread] [--work-ns N]"
       << " [--work-bimodal P,SHORT_NS,LONG_NS] [--sync-start]"
       << " [--work-file-dir PATH] [--work-file-mb N]"
-      << " [--lock-kind mutex|pthread_spinlock|reciprocating|hapax|mcs|"
-         "mcs_accordin_direct|mcs-tas|mcs-tas-tse|"
-         "mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh]"
-      << " [--timeslice-extension off|auto|require]\n"
+      << " [--lock-kind mutex|pthread_spinlock]\n"
       << "  --threads N       Number of worker threads (default: 4)\n"
       << "  --locks N         Number of independent locks (default: 16)\n"
       << "  --num-locks N     Alias for --locks\n"
@@ -178,11 +172,13 @@ struct Config {
          "(default: $TMPDIR or /tmp)\n"
       << "  --work-file-mb N  Per-thread pread work file size in MiB "
          "(default: 64)\n"
-      << "  --lock-kind K      Lock kind: "
-         "mutex|pthread_spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|"
-         "mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|"
-         "mcstas-next-tse|twa|clh (default: mutex)\n"
-      << "  --timeslice-extension M  off|auto|require (default: off)\n";
+      << "  --lock-kind K     mutex: plain pthread_mutex_t, so an LD_PRELOAD "
+         "interposition library (LiTL) decides which algorithm is measured; "
+         "pthread_spinlock: native pthread_spinlock_t control arm that "
+         "interposition leaves alone (default: mutex)\n"
+      << "                    Select a lock algorithm with a LiTL launcher, "
+         "e.g. third_party/litl/libmbmcs_original.sh ./multilockbench "
+         "--lock-kind mutex\n";
   std::exit(1);
 }
 
@@ -328,27 +324,8 @@ Config ParseArgs(int argc, char *argv[]) {
     } else if (arg == "--lock-kind") {
       const std::string lock_kind = need_next("--lock-kind");
       if (!locks_bench::TryParseLockKind(lock_kind, cfg.lock_kind)) {
-        std::cerr << "Invalid value for --lock-kind: " << lock_kind
-                  << " (expected: mutex, pthread_spinlock, reciprocating, "
-                     "hapax, mcs, mcs_accordin_direct, mcs-tas, "
-                     "mcs-tas-tse, mcs_tas_accordin_direct, mcstas-next, "
-                     "mcstas-next-tse, twa, or clh)\n";
-        std::exit(1);
-      }
-    } else if (arg == "--timeslice-extension") {
-      const std::string mode = need_next("--timeslice-extension");
-      if (mode == "off") {
-        cfg.timeslice_extension_mode =
-            locks_bench::TimesliceExtensionMode::kOff;
-      } else if (mode == "auto") {
-        cfg.timeslice_extension_mode =
-            locks_bench::TimesliceExtensionMode::kAuto;
-      } else if (mode == "require") {
-        cfg.timeslice_extension_mode =
-            locks_bench::TimesliceExtensionMode::kRequire;
-      } else {
-        std::cerr << "Invalid value for --timeslice-extension: " << mode
-                  << " (expected: off, auto, or require)\n";
+        std::cerr << "Invalid value for --lock-kind: " << lock_kind << " ("
+                  << locks_bench::LockKindRejectionHint() << ")\n";
         std::exit(1);
       }
     } else if (arg == "--help" || arg == "-h") {
@@ -723,8 +700,7 @@ int RunBenchmarkForLock(const Config &cfg, const ChainWorkFiles &work_files) {
   std::vector<std::unique_ptr<LockBenchT>> locks;
   locks.reserve(static_cast<size_t>(cfg.lock_count));
   for (uint64_t i = 0; i < cfg.lock_count; ++i) {
-    locks.push_back(std::make_unique<LockBenchT>(
-        locks_bench::LockBenchOptions{cfg.timeslice_extension_mode}));
+    locks.push_back(std::make_unique<LockBenchT>());
   }
 
   const bool chain = cfg.workload == Workload::kChain;
@@ -775,9 +751,6 @@ int RunBenchmarkForLock(const Config &cfg, const ChainWorkFiles &work_files) {
 
   for (int t = 0; t < cfg.threads; ++t) {
     workers.emplace_back([&, thread_index = t]() {
-      for (auto &lock_bench : locks) {
-        lock_bench->prepare_thread();
-      }
 
       FastRng rng(ThreadSeed(cfg.seed, static_cast<uint64_t>(thread_index)));
       // The work phase and the latency reservoir draw from their own streams so
@@ -826,7 +799,7 @@ int RunBenchmarkForLock(const Config &cfg, const ChainWorkFiles &work_files) {
         auto &lock_bench = *locks[lock_index];
         Clock::time_point after_lock;
         Clock::time_point before_unlock;
-        auto guard_state = lock_bench.lock();
+        lock_bench.lock();
         if (do_timing_sample) {
           after_lock = Clock::now();
         }
@@ -834,7 +807,7 @@ int RunBenchmarkForLock(const Config &cfg, const ChainWorkFiles &work_files) {
         if (do_timing_sample) {
           before_unlock = Clock::now();
         }
-        lock_bench.unlock(guard_state);
+        lock_bench.unlock();
         if (!record) {
           return;
         }
@@ -945,9 +918,9 @@ int RunBenchmarkForLock(const Config &cfg, const ChainWorkFiles &work_files) {
             }
             const size_t lock_index = zipf.Sample(rng.NextUnit());
             auto &lock_bench = *locks[lock_index];
-            auto guard_state = lock_bench.lock();
+            lock_bench.lock();
             BurnIters(cfg.critical_ns, cfg.burn_calibration);
-            lock_bench.unlock(guard_state);
+            lock_bench.unlock();
             BurnIters(cfg.outside_ns, cfg.burn_calibration);
           }
         }
@@ -995,7 +968,7 @@ int RunBenchmarkForLock(const Config &cfg, const ChainWorkFiles &work_files) {
         const size_t lock_index = zipf.Sample(rng.NextUnit());
         auto &lock_bench = *locks[lock_index];
 
-        auto guard_state = lock_bench.lock();
+        lock_bench.lock();
         if (do_timing_sample) {
           after_lock = Clock::now();
         }
@@ -1003,7 +976,7 @@ int RunBenchmarkForLock(const Config &cfg, const ChainWorkFiles &work_files) {
         if (do_timing_sample) {
           before_unlock = Clock::now();
         }
-        lock_bench.unlock(guard_state);
+        lock_bench.unlock();
 
         if (do_timing_sample) {
           const auto hold_ns =
@@ -1192,10 +1165,6 @@ int RunBenchmarkForLock(const Config &cfg, const ChainWorkFiles &work_files) {
   std::cout << "outside_ns: " << cfg.outside_ns << "\n";
   std::cout << "lock_kind: " << locks_bench::LockKindToString(cfg.lock_kind)
             << "\n";
-  std::cout << "timeslice_extension: "
-            << locks_bench::TimesliceExtensionModeToString(
-                   cfg.timeslice_extension_mode)
-            << "\n";
   std::cout << "burn_calibration: "
             << burn_calibration::ToString(cfg.burn_calibration) << "\n";
   std::cout << "burn_calibration_source: " << cfg.burn_calibration_source
@@ -1258,37 +1227,6 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  if (cfg.timeslice_extension_mode !=
-      locks_bench::TimesliceExtensionMode::kOff) {
-    const auto status = locks_bench::CurrentThreadTimesliceExtensionStatus(
-        cfg.timeslice_extension_mode);
-    if (!status.enabled) {
-      if (cfg.timeslice_extension_mode ==
-          locks_bench::TimesliceExtensionMode::kRequire) {
-        std::cerr << "timeslice extension is required but unavailable";
-        if (status.reason != nullptr) {
-          std::cerr << ": " << status.reason;
-        }
-        if (status.error_number != 0) {
-          std::cerr << " (errno=" << status.error_number << ", "
-                    << std::strerror(status.error_number) << ")";
-        }
-        std::cerr << "\n";
-        return 1;
-      }
-      if (status.reason != nullptr) {
-        std::cerr << "Warning: timeslice extension is unavailable; "
-                     "continuing without it: "
-                  << status.reason;
-        if (status.error_number != 0) {
-          std::cerr << " (errno=" << status.error_number << ", "
-                    << std::strerror(status.error_number) << ")";
-        }
-        std::cerr << "\n";
-      }
-    }
-  }
-
   ChainWorkFiles work_files;
   if (cfg.workload == Workload::kChain &&
       cfg.work_kind == WorkKind::kPread) {
@@ -1298,8 +1236,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  return locks_bench::DispatchByLockKind(
-      cfg.lock_kind, [&]<typename LockBenchT>() {
-        return RunBenchmarkForLock<LockBenchT>(cfg, work_files);
-      });
+  if (cfg.lock_kind == locks_bench::LockKind::kPthreadSpinlock) {
+    return RunBenchmarkForLock<locks_bench::PthreadSpinLockBench>(cfg,
+                                                                 work_files);
+  }
+  return RunBenchmarkForLock<locks_bench::PthreadMutexLockBench>(cfg,
+                                                                work_files);
 }

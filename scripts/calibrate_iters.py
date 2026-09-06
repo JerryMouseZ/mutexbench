@@ -187,14 +187,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--lock-kind",
+        choices=("mutex", "pthread_spinlock"),
         default="mutex",
-        help="mutex mode: lock kind (default: mutex)",
-    )
-    parser.add_argument(
-        "--timeslice-extension",
-        choices=("off", "auto", "require"),
-        default="off",
-        help="mutex mode: timeslice extension mode (default: off)",
+        help=(
+            "mutex mode: mutex measures a plain pthread_mutex_t, pthread_spinlock is "
+            "the non-interposed control (default: mutex). Select a lock algorithm by "
+            "running this script under a LiTL launcher instead"
+        ),
     )
     return parser.parse_args()
 
@@ -398,8 +397,6 @@ def measure_mutex(
             str(args.timing_sample_stride),
             "--lock-kind",
             args.lock_kind,
-            "--timeslice-extension",
-            args.timeslice_extension,
         ]
         if runtime_config is not None:
             command.extend(["--calibration-config", str(runtime_config)])

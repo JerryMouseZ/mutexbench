@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="$(cd -- "${MUTEXBENCH_DIR}/../.." && pwd)"
+LITL_DIR="${LITL_DIR:-$PROJECT_ROOT/third_party/litl}"
 
 usage() {
   cat <<'EOF'
@@ -16,8 +18,16 @@ Options:
   --bench-env KEY=VALUE        Set an extra environment variable only for benchmark binary
                                execution; repeatable, applied in the order given
   --calibration-config PATH    Pass an explicit iter calibration config to multilockbench
-  --lock-kinds CSV             Lock kinds to sweep (default: mutex)
+  --lock-kinds CSV             Native lock kinds to sweep: mutex and/or pthread_spinlock
+                               (default: mutex)
   --lock-kind K                Alias for --lock-kinds K
+  --litl-locks CSV             LiTL library names to sweep as extra arms; each one runs the
+                               benchmark under third_party/litl/lib<NAME>.sh so its algorithm is
+                               interposed on pthread_mutex_* (mbmcs_original, mcs_spinlock,
+                               mcsaccordin_original, ...). A bare name also resolves with an
+                               _original suffix; an absolute launcher path is accepted too
+  --litl-lock NAME             Alias for --litl-locks NAME
+  --litl-dir DIR               LiTL checkout holding lib<NAME>.sh (default: <repo>/third_party/litl)
   --threads CSV                Thread counts, comma-separated (default: 1,2,4,8,16,32,64)
   --lock-counts CSV            Independent lock counts, comma-separated (default: 4,16,64)
   --zipf-alpha CSV             Zipf skew values, comma-separated (default: 0,1.2,2.0)
@@ -27,7 +37,6 @@ Options:
   --duration-ms N              Measurement duration in ms (default: 2000)
   --warmup-duration-ms N       Warmup duration in ms (default: 50)
   --timing-sample-stride N     Timing sample stride (default: 8)
-  --timeslice-extension M      off|auto|require (default: off)
   --seed N                     Base RNG seed (default: 1)
   --repeats N                  Runs per parameter point (default: 3)
   --output-root DIR            Output root for default raw/summary
@@ -37,7 +46,8 @@ Options:
 
 Example:
   scripts/sweep_multilockbench.sh \
-    --lock-kinds mutex,mcs-tas \
+    --lock-kinds mutex \
+    --litl-locks mbmcs_original,mbmcstas_original \
     --threads 16,32,64 \
     --lock-counts 16,64 \
     --zipf-alpha 0,1.2,2.0 \
@@ -53,6 +63,8 @@ binary="$MUTEXBENCH_DIR/multilockbench"
 declare -a bench_env_args=()
 calibration_config=""
 lock_kinds_csv="mutex"
+litl_locks_csv=""
+litl_dir="$LITL_DIR"
 threads_csv="1,2,4,8,16,32,64"
 lock_counts_csv="4,16,64"
 zipf_alpha_csv="0,1.2,2.0"
@@ -61,7 +73,6 @@ outside_iters_csv="1000"
 duration_ms="2000"
 warmup_duration_ms="50"
 timing_sample_stride="8"
-timeslice_extension="off"
 seed="1"
 repeats="3"
 output_root="$MUTEXBENCH_DIR/multilockbench_sweep"
@@ -118,8 +129,12 @@ while [[ $# -gt 0 ]]; do
       timing_sample_stride="${2:-}"
       shift 2
       ;;
-    --timeslice-extension)
-      timeslice_extension="${2:-}"
+    --litl-locks|--litl-lock)
+      litl_locks_csv="${2:-}"
+      shift 2
+      ;;
+    --litl-dir)
+      litl_dir="${2:-}"
       shift 2
       ;;
     --seed)
@@ -326,14 +341,6 @@ if ! is_uint "$timing_sample_stride" || [[ "$timing_sample_stride" -eq 0 ]]; the
   echo "--timing-sample-stride must be an integer > 0" >&2
   exit 1
 fi
-case "$timeslice_extension" in
-  off|auto|require)
-    ;;
-  *)
-    echo "--timeslice-extension must be one of: off, auto, require" >&2
-    exit 1
-    ;;
-esac
 if ! is_uint "$seed"; then
   echo "--seed must be an integer >= 0" >&2
   exit 1
@@ -357,6 +364,65 @@ declare -a critical_iters=()
 declare -a outside_iters=()
 
 parse_csv_strings "$lock_kinds_csv" "--lock-kinds" lock_kinds
+declare -a litl_locks=()
+if [[ -n "$litl_locks_csv" ]]; then
+  parse_csv_strings "$litl_locks_csv" "--litl-locks" litl_locks
+fi
+
+for lock_kind in "${lock_kinds[@]}"; do
+  case "$lock_kind" in
+    mutex|pthread_spinlock|pthread-spinlock)
+      ;;
+    *)
+      echo "--lock-kinds accepts only mutex and pthread_spinlock; select lock algorithms with --litl-locks" >&2
+      exit 1
+      ;;
+  esac
+done
+
+resolve_litl_launcher() {
+  local name="$1"
+  local candidate=""
+
+  case "$name" in
+    */*)
+      printf "%s\n" "$(resolve_path "$name" "$MUTEXBENCH_DIR")"
+      return 0
+      ;;
+  esac
+  for candidate in "$litl_dir/lib${name}.sh" "$litl_dir/lib${name}_original.sh"; do
+    if [[ -f "$candidate" ]]; then
+      printf "%s\n" "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# One arm per measured lock: label, launcher path (empty when native), bench lock kind.
+declare -a lock_arm_labels=()
+declare -a lock_arm_launchers=()
+declare -a lock_arm_bench_kinds=()
+for lock_kind in "${lock_kinds[@]}"; do
+  lock_arm_labels+=("$lock_kind")
+  lock_arm_launchers+=("")
+  lock_arm_bench_kinds+=("$lock_kind")
+done
+for litl_lock in "${litl_locks[@]}"; do
+  litl_launcher_path=""
+  if ! litl_launcher_path="$(resolve_litl_launcher "$litl_lock")"; then
+    echo "LiTL launcher not found for --litl-locks entry $litl_lock (looked under $litl_dir)" >&2
+    echo "Build it first, e.g. make -C $litl_dir ALGORITHMS=\"${litl_lock}\" all" >&2
+    exit 1
+  fi
+  if [[ ! -f "$litl_launcher_path" ]]; then
+    echo "LiTL launcher is not a file: $litl_launcher_path" >&2
+    exit 1
+  fi
+  lock_arm_labels+=("$litl_lock")
+  lock_arm_launchers+=("$litl_launcher_path")
+  lock_arm_bench_kinds+=("mutex")
+done
 parse_csv_uints "$threads_csv" "--threads" "no" threads
 parse_csv_uints "$lock_counts_csv" "--lock-counts" "no" lock_counts
 parse_csv_floats "$zipf_alpha_csv" "--zipf-alpha" zipf_alphas
@@ -411,10 +477,16 @@ join_csv_row \
   "per_lock_operations" \
   > "$output_raw"
 
-total_runs=$(( ${#lock_kinds[@]} * ${#threads[@]} * ${#lock_counts[@]} * ${#zipf_alphas[@]} * ${#critical_iters[@]} * ${#outside_iters[@]} * repeats ))
+total_runs=$(( ${#lock_arm_labels[@]} * ${#threads[@]} * ${#lock_counts[@]} * ${#zipf_alphas[@]} * ${#critical_iters[@]} * ${#outside_iters[@]} * repeats ))
 current_run=0
 
-for lock_kind in "${lock_kinds[@]}"; do
+for arm_index in "${!lock_arm_labels[@]}"; do
+  lock_kind="${lock_arm_labels[$arm_index]}"
+  bench_lock_kind="${lock_arm_bench_kinds[$arm_index]}"
+  declare -a litl_launcher=()
+  if [[ -n "${lock_arm_launchers[$arm_index]}" ]]; then
+    litl_launcher=(bash "${lock_arm_launchers[$arm_index]}")
+  fi
   for thread_count in "${threads[@]}"; do
     for lock_count in "${lock_counts[@]}"; do
       for zipf_alpha in "${zipf_alphas[@]}"; do
@@ -425,6 +497,7 @@ for lock_kind in "${lock_kinds[@]}"; do
               echo "[${current_run}/${total_runs}] lock_kind=${lock_kind} threads=${thread_count} locks=${lock_count} zipf_alpha=${zipf_alpha} critical=${critical_ns} outside=${outside_ns} repeat=${repeat}" >&2
 
               bench_cmd=(
+                "${litl_launcher[@]}"
                 "$binary"
                 --threads "$thread_count"
                 --locks "$lock_count"
@@ -435,8 +508,7 @@ for lock_kind in "${lock_kinds[@]}"; do
                 --critical-ns "$critical_ns"
                 --outside-ns "$outside_ns"
                 --timing-sample-stride "$timing_sample_stride"
-                --lock-kind "$lock_kind"
-                --timeslice-extension "$timeslice_extension"
+                --lock-kind "$bench_lock_kind"
               )
               if [[ -n "$calibration_config" ]]; then
                 bench_cmd+=( --calibration-config "$calibration_config" )

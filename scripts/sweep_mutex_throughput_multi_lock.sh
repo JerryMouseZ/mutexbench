@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_ROOT="$(cd -- "${MUTEXBENCH_DIR}/../.." && pwd)"
+LITL_DIR="${LITL_DIR:-$PROJECT_ROOT/third_party/litl}"
 MCS_ACCORDIN_DEBUG_COUNTERS="${MCS_ACCORDIN_DEBUG_COUNTERS:-}"
 MCS_TAS_ACCORDIN_DEBUG_COUNTERS="${MCS_TAS_ACCORDIN_DEBUG_COUNTERS:-}"
 MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS="${MCS_ACCORDIN_DIRECT_DEBUG_COUNTERS:-$MCS_ACCORDIN_DEBUG_COUNTERS}"
@@ -28,23 +29,26 @@ Usage:
 Options:
   --locks CSV                Required. Comma-separated lock scripts.
                              Item format:
-                               1) builtin lock kind (native run): mutex|pthread_spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh
+                               1) builtin lock kind (native run): mutex|pthread_spinlock
                                2) native-mutex (alias of native:mutex)
-                               3) native:<kind> where <kind> is one of
-                                  mutex|pthread_spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh
-                               4) /path/to/interpose_mcs.sh
-                               5) mcs=/path/to/interpose_custom.sh
-                               6) non-builtin short name (e.g. flexguard),
+                               3) native:<kind> where <kind> is mutex|pthread_spinlock
+                               4) litl:<name>, e.g. litl:mbmcs_original, litl:mcs_spinlock;
+                                  runs the benchmark under $LITL_DIR/lib<name>.sh so that
+                                  algorithm is interposed on pthread_mutex_*. A bare name
+                                  also resolves with an _original suffix
+                               5) /path/to/interpose_mcs.sh
+                               6) mcs=/path/to/interpose_custom.sh
+                               7) non-builtin short name (e.g. flexguard),
                                   resolved as $FLEXGUARD_DIR/build/interpose_<name>.sh
-                               7) mcs_accordin (run benchmark with mcs_accordin_direct lock; no pthread hook)
-                               8) mcs_accordin_no_bpf (same as mcs_accordin with MCS_ACCORDIN_DIRECT_DISABLE_BPF=1)
-                               9) mcs_tse (run benchmark with LD_PRELOAD=libmcs_tse.so)
-                              10) mcs_tas_accordin (run benchmark with mcs_tas_accordin_direct lock; no pthread hook)
-                              11) mcs_tas_accordin_no_bpf (same as mcs_tas_accordin with MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1)
-                              12) ttas_accordin (run benchmark with LD_PRELOAD=libttas_accordin.so)
-                              13) ttas_accordin_no_bpf (same as ttas_accordin with TTAS_ACCORDIN_DISABLE_BPF=1)
-                              14) reciprocating_accordin (run benchmark with LD_PRELOAD=libreciprocating_accordin.so)
-                              15) reciprocating_accordin_no_bpf (same as reciprocating_accordin with RECIPROCATING_ACCORDIN_DISABLE_BPF=1)
+                               8) mcs_accordin (litl:mcsaccordin_original plus the accordin env)
+                               9) mcs_accordin_no_bpf (same as mcs_accordin with MCS_ACCORDIN_DIRECT_DISABLE_BPF=1)
+                              10) mcs_tse (run benchmark with LD_PRELOAD=libmcs_tse.so)
+                              11) mcs_tas_accordin (litl:mcstasaccordin_original plus the accordin env)
+                              12) mcs_tas_accordin_no_bpf (same as mcs_tas_accordin with MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1)
+                              13) ttas_accordin (run benchmark with LD_PRELOAD=libttas_accordin.so)
+                              14) ttas_accordin_no_bpf (same as ttas_accordin with TTAS_ACCORDIN_DISABLE_BPF=1)
+                              15) reciprocating_accordin (run benchmark with LD_PRELOAD=libreciprocating_accordin.so)
+                              16) reciprocating_accordin_no_bpf (same as reciprocating_accordin with RECIPROCATING_ACCORDIN_DISABLE_BPF=1)
                              Name conflict rule:
                                - Builtin names always run as native locks.
                                - To run external lock with a builtin-like name,
@@ -89,7 +93,7 @@ Options:
                              all: sudo for every lock run
                              auto: sudo only for flexguard*/hybridlock*/mcs_accordin*/mcs_tas_accordin*/ttas_accordin*/reciprocating_accordin* locks
                              none: never sudo
-  --timeslice-extension M    off|auto|require (default: off)
+  --litl-dir DIR             LiTL checkout holding lib<name>.sh (default: <repo>/third_party/litl)
   --with-scx-lavd            Run scx_lavd in background for the whole sweep:
                                sudo /mnt/home/jz/scx/target/release/scx_lavd --per-cpu-dsq --performance
                              It will be stopped after all locks finish.
@@ -124,7 +128,7 @@ With --bpf-profile, bpftool program-profile artifacts are generated per lock:
 
 Example:
   scripts/sweep_mutex_throughput_multi_lock.sh \
-    --locks mutex,mcs,ticket \
+    --locks mutex,litl:mbmcs_original,litl:ticket_original \
     --sudo-mode all \
     --threads 1,2,4,8,16 \
     --critical-ns 10,100,500 \
@@ -393,13 +397,44 @@ contains_flag() {
 is_builtin_lock_kind() {
   local kind="$1"
   case "$kind" in
-    mutex|pthread_spinlock|pthread-spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh)
+    mutex|pthread_spinlock|pthread-spinlock)
       return 0
       ;;
     *)
       return 1
       ;;
   esac
+}
+
+resolve_litl_launcher() {
+  local name="$1"
+  local candidate=""
+
+  case "$name" in
+    */*)
+      printf "%s\n" "$(resolve_executable_path "$name" "$MUTEXBENCH_DIR")"
+      return 0
+      ;;
+  esac
+  for candidate in "$litl_dir/lib${name}.sh" "$litl_dir/lib${name}_original.sh"; do
+    if [[ -f "$candidate" ]]; then
+      printf "%s\n" "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_litl_launcher() {
+  local name="$1"
+  local resolved=""
+
+  if ! resolved="$(resolve_litl_launcher "$name")" || [[ ! -f "$resolved" ]]; then
+    echo "LiTL launcher not found for '$name' (looked under $litl_dir)" >&2
+    echo "Build it first, e.g. make -C $litl_dir ALGORITHMS=\"${name}\" all" >&2
+    exit 1
+  fi
+  printf "%s\n" "$resolved"
 }
 
 run_with_optional_sudo() {
@@ -1306,7 +1341,7 @@ sample_bpf_enabled="0"
 sample_bpf_layout="auto"
 sample_bpf_interval_us="500"
 sudo_mode="all"
-timeslice_extension="off"
+litl_dir="$LITL_DIR"
 with_scx_lavd="0"
 scx_lavd_bin="/mnt/home/jz/scx/target/release/scx_lavd"
 mcs_tas_accordin_sched_ext_conflict="stop"
@@ -1376,8 +1411,8 @@ while [[ $# -gt 0 ]]; do
       sudo_mode="${2:-}"
       shift 2
       ;;
-    --timeslice-extension)
-      timeslice_extension="${2:-}"
+    --litl-dir)
+      litl_dir="${2:-}"
       shift 2
       ;;
     --with-scx-lavd)
@@ -1426,16 +1461,12 @@ if contains_flag "--output-summary" "${sweep_args[@]}"; then
   echo "Do not pass --output-summary. It is generated per lock." >&2
   exit 1
 fi
-if contains_flag "--timeslice-extension" "${sweep_args[@]}"; then
-  echo "Do not pass --timeslice-extension through forwarded sweep args. Use the top-level flag instead." >&2
+if contains_flag "--litl-lock" "${sweep_args[@]}"; then
+  echo "Do not pass --litl-lock through forwarded sweep args. Use a litl:<name> entry in --locks instead." >&2
   exit 1
 fi
 if [[ "$sudo_mode" != "all" && "$sudo_mode" != "auto" && "$sudo_mode" != "none" ]]; then
   echo "--sudo-mode must be one of: all, auto, none" >&2
-  exit 1
-fi
-if [[ "$timeslice_extension" != "off" && "$timeslice_extension" != "auto" && "$timeslice_extension" != "require" ]]; then
-  echo "--timeslice-extension must be one of: off, auto, require" >&2
   exit 1
 fi
 if [[ "$mcs_tas_accordin_sched_ext_conflict" != "stop" && "$mcs_tas_accordin_sched_ext_conflict" != "error" && "$mcs_tas_accordin_sched_ext_conflict" != "ignore" ]]; then
@@ -1457,7 +1488,6 @@ if [[ "$queue_lock_file" != /* ]]; then
 fi
 acquire_queue_lock "$queue_lock_file"
 
-sweep_args+=(--timeslice-extension "$timeslice_extension")
 if [[ "$profiling_enabled" == "1" ]]; then
   sweep_args+=(--profile)
 fi
@@ -1515,6 +1545,8 @@ for item in "${lock_items[@]}"; do
   lock_script=""
   lock_kind="hook"
   bench_lock_kind=""
+  litl_lock_name=""
+  litl_launcher=""
   mcs_accordin_lib=""
   mcs_tse_lib=""
   mcs_tas_accordin_direct_lib=""
@@ -1537,6 +1569,16 @@ for item in "${lock_items[@]}"; do
         lock_name="mutex"
         bench_lock_kind="mutex"
         lock_script=""
+        ;;
+      litl:*)
+        lock_kind="litl"
+        lock_script=""
+        litl_lock_name="${item#litl:}"
+        if [[ -z "$litl_lock_name" ]]; then
+          echo "Empty LiTL library name in item: $item" >&2
+          exit 1
+        fi
+        lock_name="$litl_lock_name"
         ;;
       native:*)
         lock_kind="native"
@@ -1644,6 +1686,8 @@ for item in "${lock_items[@]}"; do
       echo "Lock script is not executable: $lock_script" >&2
       exit 1
     fi
+  elif [[ "$lock_kind" == "litl" ]]; then
+    litl_launcher="$(require_litl_launcher "$litl_lock_name")"
   elif [[ "$lock_kind" == "mcs_accordin_direct" ]]; then
     if [[ "$with_scx_lavd" == "1" ]]; then
       echo "lock=${lock_name} cannot be used together with --with-scx-lavd (both need sched_ext ownership)." >&2
@@ -1785,12 +1829,23 @@ for item in "${lock_items[@]}"; do
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
+  elif [[ "$lock_kind" == "litl" ]]; then
+    cmd=(
+      "$sweep_script"
+      "${sweep_args[@]}"
+      "${sample_bpf_args[@]}"
+      --lock-kind "mutex"
+      --litl-lock "$litl_launcher"
+      --output-raw "$raw_out"
+      --output-summary "$summary_out"
+    )
   elif [[ "$lock_kind" == "mcs_accordin_direct" ]]; then
     cmd=(
       "$sweep_script"
       "${sweep_args[@]}"
       "${sample_bpf_args[@]}"
-      --lock-kind "mcs_accordin_direct"
+      --lock-kind "mutex"
+      --litl-lock "$(require_litl_launcher mcsaccordin_original)"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )
@@ -1813,7 +1868,8 @@ for item in "${lock_items[@]}"; do
       "$sweep_script"
       "${sweep_args[@]}"
       "${sample_bpf_args[@]}"
-      --lock-kind "mcs_tas_accordin_direct"
+      --lock-kind "mutex"
+      --litl-lock "$(require_litl_launcher mcstasaccordin_original)"
       --output-raw "$raw_out"
       --output-summary "$summary_out"
     )

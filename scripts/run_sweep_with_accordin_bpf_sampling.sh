@@ -38,7 +38,6 @@ Example:
     bench/mutexbench/scripts/sweep_mutex_throughput.sh \
       --threads 32 --critical-ns 350 --outside-ns 350 \
       --duration-ms 3000 --warmup-duration-ms 1000 --repeats 3 \
-      --timeslice-extension off \
       --bench-ld-preload target/release/libaccordin.so \
       --lock-kind mutex \
       --output-raw /tmp/lb_raw.csv \

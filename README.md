@@ -3,12 +3,60 @@
 一个用于评估不同互斥锁实现吞吐量与扩展性的 C++20 基准测试仓库。  
 核心程序 `mutex_bench` 支持在可配置线程数、临界区开销与非临界区开销下测量吞吐，`multilockbench` 支持 Zipfian 热点分布的多锁 workload，配套脚本可批量扫频、多锁对比、结果聚合和绘图。
 
+## 锁的选择方式
+
+基准程序本身不再实现任何锁算法。被测锁就是一个普通的 `pthread_mutex_t`，具体跑
+哪个算法完全由 LD_PRELOAD 进来的 LiTL 库决定：
+
+```bash
+bash <repo>/third_party/litl/libmbmcs_original.sh ./mutex_bench --lock-kind mutex --threads 8
+```
+
+启动时 LiTL 会打印一行 `Using Lib... with waiting ...`，那行就是 preload 生效的证据。
+
+`--lock-kind` 只接受两个值：
+
+- `mutex`（默认）：普通 `pthread_mutex_t`，即 LiTL 当前 interpose 的算法
+- `pthread_spinlock`：原生 `pthread_spinlock_t`；LiTL 的 direct 系列算法不会 interpose
+  `pthread_spin_*`，因此它是一个不受 interpose 影响的对照组
+
+传入其他值会直接报错，并提示用 LiTL launcher 选择算法。
+
+LiTL launcher 位于 `<repo>/third_party/litl/lib<算法>.sh`，先用 `make -C third_party/litl
+ALGORITHMS="<算法>" all` 构建。可用算法名包括：
+
+- 从本仓库迁移过去的基线：`mbmcs`、`mbmcstas`、`mbmcstastse`、`mbmcstasnext`、
+  `mbmcstasnexttse`、`mbclh`、`mbtwa`、`mbhapax`、`mbreciprocating`（launcher 文件名带
+  `_original` 后缀，如 `libmbmcs_original.sh`）
+- 其他基线：`gcr`、`cna`、`flexguard`
+- LiTL 上游算法：`mcs_spinlock`、`clh_spinlock`、`malthusian_spinlock`、
+  `mutexee_original`、`ticket_original` 等
+- accordin：`mcsaccordin_original`、`mcstasaccordin_original`
+
+旧 `--lock-kind` 取值到 LiTL 算法名的对应关系：
+
+| 旧 `--lock-kind` | LiTL 算法 |
+| --- | --- |
+| `mcs` | `mbmcs` |
+| `mcs-tas` | `mbmcstas` |
+| `mcs-tas-tse` | `mbmcstastse` |
+| `mcstas-next` | `mbmcstasnext` |
+| `mcstas-next-tse` | `mbmcstasnexttse` |
+| `clh` | `mbclh` |
+| `twa` | `mbtwa` |
+| `hapax` | `mbhapax` |
+| `reciprocating` | `mbreciprocating` |
+| `mcs_accordin_direct` | `mcsaccordin_original` |
+| `mcs_tas_accordin_direct` | `mcstasaccordin_original` |
+
+原先的 `--timeslice-extension` 选项只用于配置这些内置锁，已随之移除；该机制现在由 LiTL
+一侧提供（例如 `mbmcstastse`）。
+
 ## 功能概览
 
-- 支持锁类型：`mutex`、`reciprocating`、`hapax`、`mcs`、`mcs-tas`、`mcs-tas-tse`、`mcs_tas_accordin_direct`、`mcstas-next`、`mcstas-next-tse`、`twa`、`clh`
 - 指标输出：吞吐量、锁内持有时间、平均等待时间近似、解锁到下一次加锁时间估计
 - 扫频脚本：自动生成 `raw.csv`（逐次运行）与 `summary.csv`（聚合统计）
-- 多锁对比：支持内置锁、外部 interpose 脚本、`mcs_tse` / `ttas_accordin` 预加载模式，以及 `mcs_tas_accordin` direct-lock 模式
+- 多锁对比：支持 LiTL launcher、外部 interpose 脚本，以及 `mcs_tse` / `ttas_accordin` 预加载模式
 - Python 工具：多锁统计分析、线程推荐、吞吐量曲线图批量生成
 
 ## 目录结构
@@ -18,8 +66,7 @@
 ├── mutex_bench.cpp                     # 主基准程序
 ├── curve_bench.cpp                     # BurnIters 开销曲线测量
 ├── multilockbench.c                    # Zipfian 热点多锁基准程序
-├── locks/                              # 各锁实现
-├── bench/locks_bench/                  # 锁适配与调度
+├── bench/locks_bench/                  # pthread mutex / spinlock 适配与条件变量后端
 ├── scripts/
 │   ├── sweep_mutex_throughput.sh       # 单锁批量扫频
 │   ├── sweep_multilockbench.sh         # Zipfian 多锁基准批量扫频
@@ -38,6 +85,7 @@
 - `make`
 - Python 3（绘图脚本需要 `matplotlib`）
 - `pidstat`（`scripts/sweep_mutex_throughput.sh` 需要，用于记录 steady CPU）
+- LiTL：`<repo>/third_party/litl`，用于选择被测锁算法
 - 可选：`sudo`、`bpftool`（使用 `mcs_tas_accordin`、`ttas_accordin` 或部分锁脚本时可能需要）
 - 可选：`python3`（启用 `--sample-bpf` 时需要，用于记录 accordin 控制面 sampler CSV）
 
@@ -65,8 +113,14 @@ make
   --critical-ns 100 \
   --outside-ns 100 \
   --timing-sample-stride 8 \
-  --lock-kind mutex \
-  --timeslice-extension auto
+  --lock-kind mutex
+```
+
+换成某个具体算法，只要把命令包在 LiTL launcher 里：
+
+```bash
+bash <repo>/third_party/litl/libmbmcs_original.sh \
+  ./mutex_bench --threads 4 --duration-ms 1000 --lock-kind mutex
 ```
 
 常用参数：
@@ -77,38 +131,13 @@ make
 - `--critical-ns N`：请求的临界区 Burn 时间（纳秒）
 - `--outside-ns N`：请求的临界区外 Burn 时间（纳秒）
 - `--timing-sample-stride N`：每 N 次操作采样一次时延
-- `--lock-kind`：`mutex|reciprocating|hapax|mcs|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh`
-- `--timeslice-extension`：`off|auto|require`
+- `--lock-kind`：`mutex|pthread_spinlock`
 
 兼容性说明：
 
 - `--critical-iters` 仍可用，但现在只是 `--critical-ns` 的兼容别名
 
-### 1.1) 使用 timeslice extension
-
-如果内核和 glibc 同时支持 RSEQ timeslice extension，可以在持锁临界区请求时间片延长，并在解锁后通过 `rseq_slice_yield()` 主动交还扩展时间片：
-
-```bash
-./mutex_bench \
-  --threads 32 \
-  --critical-ns 100 \
-  --outside-ns 100 \
-  --lock-kind mcs \
-  --timeslice-extension auto
-```
-
-模式说明：
-
-- `off`：关闭（默认）
-- `auto`：尝试启用；当前环境不支持时自动回退
-- `require`：必须启用；不支持时直接报错退出
-
-注意：
-
-- 该功能依赖线程已注册的 `rseq` 区域能够暴露 `slice_ctrl` 字段；旧 glibc 即使在新内核上也可能无法使用
-- 更适合用户态自旋/队列锁（如 `mcs`、`mcs-tas`、`mcs-tas-tse`、`clh`、`twa`、`hapax`、`reciprocating`）
-
-### 1.2) Zipfian 热点多锁基准
+### 1.1) Zipfian 热点多锁基准
 
 `multilockbench` 在同一个进程内创建多个独立锁，每次操作按 Zipfian 分布选择一个锁：rank 1 映射到 lock 0，因此 `per_lock_operations` 的第一个值就是默认热点锁计数。
 
@@ -121,7 +150,14 @@ make
   --warmup-duration-ms 1000 \
   --critical-ns 300 \
   --outside-ns 3000 \
-  --lock-kind mcs-tas
+  --lock-kind mutex
+```
+
+同样地，换算法就是换 launcher：
+
+```bash
+bash <repo>/third_party/litl/libmbmcstas_original.sh \
+  ./multilockbench --threads 32 --locks 64 --zipf-alpha 1.2 --lock-kind mutex
 ```
 
 常用新增参数：
@@ -130,11 +166,12 @@ make
 - `--zipf-alpha A`：热点偏斜程度，`0` 表示均匀分布，值越大越集中到低编号锁
 - `--seed N`：每线程随机数种子的基础值，便于复现实验
 
-### 1.3) Zipfian 多锁参数扫频
+### 1.2) Zipfian 多锁参数扫频
 
 ```bash
 scripts/sweep_multilockbench.sh \
-  --lock-kinds mutex,mcs-tas \
+  --lock-kinds mutex \
+  --litl-locks mbmcs_original,mbmcstas_original \
   --threads 16,32,64 \
   --lock-counts 16,64 \
   --zipf-alpha 0,1.2,2.0 \
@@ -148,12 +185,16 @@ scripts/sweep_multilockbench.sh \
 
 该脚本输出 `raw.csv` 和 `summary.csv`；`raw.csv` 保留每次运行的 `per_lock_operations`，并用分号分隔各锁计数，便于直接检查热点分布。
 
+`--lock-kinds` 只接受 `mutex` / `pthread_spinlock`；`--litl-locks` 里的每个名字都会成为一条
+独立的扫频 arm，运行时用对应的 LiTL launcher 包住基准命令。`raw.csv` 的 `lock_kind` 列记录
+的就是这条 arm 的名字。
+
 ### 2) 单锁参数扫频（输出 raw + summary）
 
 ```bash
 scripts/sweep_mutex_throughput.sh \
   --lock-kind mutex \
-  --timeslice-extension auto \
+  --litl-lock mbmcs_original \
   --threads 1,2,4,8,16,32 \
   --critical-ns 10,50,100,200,500 \
   --outside-ns 10,50,100,200,500 \
@@ -172,9 +213,8 @@ scripts/sweep_mutex_throughput.sh \
 
 ```bash
 scripts/sweep_mutex_throughput_multi_lock.sh \
-  --locks mutex,mcs,clh \
+  --locks mutex,litl:mbmcs_original,litl:mbclh_original \
   --sudo-mode none \
-  --timeslice-extension auto \
   --threads 1,2,4,8,16,32 \
   --critical-ns 10,50,100,200,500 \
   --outside-ns 10,50,100,200,500 \
@@ -203,12 +243,13 @@ scripts/sweep_mutex_throughput_multi_lock.sh \
 
 `--locks` 支持：
 
-- 内置锁名（如 `mutex,mcs,clh`）
-- `native:<kind>`
+- 内置锁名：`mutex`、`pthread_spinlock`
+- `native:<kind>`（`mutex` 或 `pthread_spinlock`）
+- `litl:<算法>`（如 `litl:mbmcs_original`、`litl:mcs_spinlock`），用对应的 LiTL launcher 包住基准命令
 - `name=/path/to/interpose_xxx.sh`
 - `mcs_tse`（通过 `LD_PRELOAD=target/release/libmcs_tse.so` 运行 `mutex` lock kind；可用 `MCS_TSE_LIB` 覆盖库路径，默认按 `target/release`、`target/debug` 查找；不启用 sched_ext 冲突处理或 BPF sampler）
-- `mcs_tas_accordin`（通过 `MCS_TAS_ACCORDIN_DIRECT_LIB=target/release/libmcs_tas_accordin_direct.so` 调用 `--lock-kind mcs_tas_accordin_direct`，不走 pthread hook；加 `--profile` 会保留每次运行的 `perf.data`，并生成可读的 `perf_reports/*.report.txt` / `*.script.txt`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
-- `mcs_tas_accordin_no_bpf`（同样调用 `mcs_tas_accordin_direct`，并设置 `MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data` 并生成 `perf_reports/`）
+- `mcs_tas_accordin`（等价于 `litl:mcstasaccordin_original`，并附带 accordin 的环境变量；加 `--profile` 会保留每次运行的 `perf.data`，并生成可读的 `perf_reports/*.report.txt` / `*.script.txt`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
+- `mcs_tas_accordin_no_bpf`（同上，并设置 `MCS_TAS_ACCORDIN_DIRECT_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data` 并生成 `perf_reports/`）
 - `ttas_accordin`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`；加 `--profile` 会保留每次运行的 `perf.data` 并生成 `perf_reports/`；加 `--sample-bpf` 会保留每次运行的 `*.bpf_samples.csv`）
 - `ttas_accordin_no_bpf`（通过 `LD_PRELOAD=target/release/libttas_accordin.so`，并设置 `TTAS_ACCORDIN_DISABLE_BPF=1`；加 `--profile` 会保留 `perf.data` 并生成 `perf_reports/`）
 
@@ -228,7 +269,7 @@ CS/NCS。
 ./mutex_bench \
   --workload two-lock \
   --threads 64 \
-  --lock-kind mcs_tas_accordin_direct \
+  --lock-kind mutex \
   --group-a-critical-ns 3000 \
   --group-a-outside-ns 300 \
   --group-b-critical-ns 100 \

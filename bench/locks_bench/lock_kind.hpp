@@ -4,20 +4,13 @@
 
 namespace locks_bench {
 
+// The benchmark no longer implements lock algorithms. `mutex` measures a plain
+// pthread_mutex_t, so an LD_PRELOAD interposition library (LiTL) decides which
+// algorithm runs. `pthread_spinlock` is a non-interposed control: LiTL's direct
+// algorithms leave pthread_spin_* native.
 enum class LockKind {
   kMutex,
   kPthreadSpinlock,
-  kReciprocating,
-  kHapax,
-  kMcs,
-  kMcsAccordinDirect,
-  kMcsTas,
-  kMcsTasAccordinDirect,
-  kMcsTasTse,
-  kMcsTasNext,
-  kMcsTasNextTse,
-  kTwa,
-  kClh,
 };
 
 inline const char *LockKindToString(LockKind kind) {
@@ -26,28 +19,6 @@ inline const char *LockKindToString(LockKind kind) {
     return "mutex";
   case LockKind::kPthreadSpinlock:
     return "pthread_spinlock";
-  case LockKind::kReciprocating:
-    return "reciprocating";
-  case LockKind::kHapax:
-    return "hapax";
-  case LockKind::kMcs:
-    return "mcs";
-  case LockKind::kMcsAccordinDirect:
-    return "mcs_accordin_direct";
-  case LockKind::kMcsTas:
-    return "mcs-tas";
-  case LockKind::kMcsTasAccordinDirect:
-    return "mcs_tas_accordin_direct";
-  case LockKind::kMcsTasTse:
-    return "mcs-tas-tse";
-  case LockKind::kMcsTasNext:
-    return "mcstas-next";
-  case LockKind::kMcsTasNextTse:
-    return "mcstas-next-tse";
-  case LockKind::kTwa:
-    return "twa";
-  case LockKind::kClh:
-    return "clh";
   }
   return "unknown";
 }
@@ -61,51 +32,13 @@ inline bool TryParseLockKind(const std::string &value, LockKind &out) {
     out = LockKind::kPthreadSpinlock;
     return true;
   }
-  if (value == "reciprocating") {
-    out = LockKind::kReciprocating;
-    return true;
-  }
-  if (value == "hapax") {
-    out = LockKind::kHapax;
-    return true;
-  }
-  if (value == "mcs") {
-    out = LockKind::kMcs;
-    return true;
-  }
-  if (value == "mcs_accordin_direct") {
-    out = LockKind::kMcsAccordinDirect;
-    return true;
-  }
-  if (value == "mcs-tas") {
-    out = LockKind::kMcsTas;
-    return true;
-  }
-  if (value == "mcs_tas_accordin_direct") {
-    out = LockKind::kMcsTasAccordinDirect;
-    return true;
-  }
-  if (value == "mcs-tas-tse") {
-    out = LockKind::kMcsTasTse;
-    return true;
-  }
-  if (value == "mcstas-next") {
-    out = LockKind::kMcsTasNext;
-    return true;
-  }
-  if (value == "mcstas-next-tse") {
-    out = LockKind::kMcsTasNextTse;
-    return true;
-  }
-  if (value == "twa") {
-    out = LockKind::kTwa;
-    return true;
-  }
-  if (value == "clh") {
-    out = LockKind::kClh;
-    return true;
-  }
   return false;
+}
+
+inline const char *LockKindRejectionHint() {
+  return "expected: mutex or pthread_spinlock. Lock algorithms are selected by "
+         "a LiTL launcher instead, e.g. "
+         "third_party/litl/libmbmcs_original.sh ./mutex_bench --lock-kind mutex";
 }
 
 } // namespace locks_bench

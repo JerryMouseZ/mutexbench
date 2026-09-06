@@ -37,7 +37,11 @@ Usage:
 Options:
   --sweep-script PATH        Sweep script (default: <scripts>/sweep_mutex_throughput.sh)
   --binary PATH              Benchmark binary forwarded to the sweep script
-  --lock-kind K              Lock kind (default: mcs_tas_accordin_direct)
+  --lock-kind K              Native lock kind forwarded to the sweep script:
+                             mutex or pthread_spinlock (default: mutex)
+  --litl-lock NAME           LiTL library whose algorithm is interposed on pthread_mutex_*
+                             (default: mcstasaccordin_original; pass "none" for a plain
+                             pthread mutex). Forwarded to the sweep script as --litl-lock
   --direct-lib PATH          Value for MCS_TAS_ACCORDIN_DIRECT_LIB
                              (default: <repo>/target/release/libmcs_tas_accordin_direct.so;
                              pass "none" to leave it unset)
@@ -75,7 +79,8 @@ EOF
 
 sweep_script="$SCRIPT_DIR/sweep_mutex_throughput.sh"
 binary=""
-lock_kind="mcs_tas_accordin_direct"
+lock_kind="mutex"
+litl_lock="mcstasaccordin_original"
 direct_lib="$PROJECT_ROOT/target/release/libmcs_tas_accordin_direct.so"
 bench_ld_preload=""
 declare -a extra_bench_env=()
@@ -107,6 +112,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --lock-kind)
       lock_kind="${2:-}"
+      shift 2
+      ;;
+    --litl-lock)
+      litl_lock="${2:-}"
       shift 2
       ;;
     --direct-lib)
@@ -441,6 +450,11 @@ for arm_spec in "${arms[@]}"; do
     cmd+=(
       "$sweep_script"
       --lock-kind "$lock_kind"
+    )
+    if [[ -n "$litl_lock" && "$litl_lock" != "none" ]]; then
+      cmd+=(--litl-lock "$litl_lock")
+    fi
+    cmd+=(
       --threads "$threads_csv"
       --critical-ns "$critical_ns"
       --outside-ns "$outside_ns"

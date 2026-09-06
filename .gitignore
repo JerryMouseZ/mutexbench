@@ -31,3 +31,6 @@ results*
 
 __pycache__
 /docs/superpowers/
+
+# Built benchmark binary
+multilockbench

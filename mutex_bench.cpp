@@ -17,7 +17,6 @@
 #include "bench/burn_calibration.hpp"
 #include "bench/locks_bench/cond_bench.hpp"
 #include "bench/locks_bench/lock_bench.hpp"
-#include "bench/locks_bench/lock_dispatch.hpp"
 #include "bench/locks_bench/lock_kind.hpp"
 
 using Clock = std::chrono::steady_clock;
@@ -69,8 +68,6 @@ struct Config {
       kDefaultBurnCalibrationNumerator, kDefaultBurnCalibrationDenominator};
   std::string burn_calibration_source = "compiled-default";
   locks_bench::LockKind lock_kind = locks_bench::LockKind::kMutex;
-  locks_bench::TimesliceExtensionMode timeslice_extension_mode =
-      locks_bench::TimesliceExtensionMode::kOff;
   WorkloadMode workload = WorkloadMode::kSingle;
 };
 
@@ -79,10 +76,7 @@ struct Config {
       << "Usage: " << prog
       << " [--threads N] [--duration-ms N] [--warmup-duration-ms N]"
       << " [--critical-ns N] [--outside-ns N] [--timing-sample-stride "
-         "N] [--lock-kind mutex|pthread_spinlock|reciprocating|hapax|mcs|"
-         "mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|"
-         "mcstas-next-tse|twa|clh]"
-      << " [--timeslice-extension off|auto|require]"
+         "N] [--lock-kind mutex|pthread_spinlock]"
       << " [--workload single|two-lock|cv-pingpong|cv-broadcast]"
       << " [--broadcast-interval-us N]"
       << " [--group-a-critical-ns N] [--group-a-outside-ns N]"
@@ -119,12 +113,13 @@ struct Config {
          "8)\n"
       << "  --calibration-config PATH  Optional iter calibration config "
          "(default: <binary-dir>/iter_calibration.cfg)\n"
-      << "  --lock-kind K      Lock kind: "
-         "mutex|pthread_spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|"
-         "mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|"
-         "twa|clh (default: "
-         "mutex)\n"
-      << "  --timeslice-extension M  off|auto|require (default: off)\n";
+      << "  --lock-kind K      mutex: plain pthread_mutex_t, so an "
+         "LD_PRELOAD interposition library (LiTL) decides which algorithm is "
+         "measured; pthread_spinlock: native pthread_spinlock_t control arm "
+         "that interposition leaves alone (default: mutex)\n"
+      << "                     Select a lock algorithm with a LiTL launcher, "
+         "e.g. third_party/litl/libmbmcs_original.sh ./mutex_bench "
+         "--lock-kind mutex\n";
   std::exit(1);
 }
 
@@ -212,27 +207,8 @@ Config ParseArgs(int argc, char *argv[]) {
     } else if (arg == "--lock-kind") {
       const std::string lock_kind = need_next("--lock-kind");
       if (!locks_bench::TryParseLockKind(lock_kind, cfg.lock_kind)) {
-        std::cerr << "Invalid value for --lock-kind: " << lock_kind
-                  << " (expected: mutex, pthread_spinlock, reciprocating, hapax, mcs, "
-                     "mcs_accordin_direct, mcs-tas, mcs-tas-tse, "
-                     "mcs_tas_accordin_direct, mcstas-next, mcstas-next-tse, "
-                     "twa, or clh)\n";
-        std::exit(1);
-      }
-    } else if (arg == "--timeslice-extension") {
-      const std::string mode = need_next("--timeslice-extension");
-      if (mode == "off") {
-        cfg.timeslice_extension_mode =
-            locks_bench::TimesliceExtensionMode::kOff;
-      } else if (mode == "auto") {
-        cfg.timeslice_extension_mode =
-            locks_bench::TimesliceExtensionMode::kAuto;
-      } else if (mode == "require") {
-        cfg.timeslice_extension_mode =
-            locks_bench::TimesliceExtensionMode::kRequire;
-      } else {
-        std::cerr << "Invalid value for --timeslice-extension: " << mode
-                  << " (expected: off, auto, or require)\n";
+        std::cerr << "Invalid value for --lock-kind: " << lock_kind << " ("
+                  << locks_bench::LockKindRejectionHint() << ")\n";
         std::exit(1);
       }
     } else if (arg == "--help" || arg == "-h") {
@@ -288,12 +264,6 @@ Config ParseArgs(int argc, char *argv[]) {
               << " has no condition-variable backend; condition-variable "
                  "workloads support these lock kinds: "
               << locks_bench::SupportedCondLockKinds() << "\n";
-    std::exit(1);
-  }
-  if (IsCondWorkload(cfg.workload) &&
-      cfg.timeslice_extension_mode != locks_bench::TimesliceExtensionMode::kOff) {
-    std::cerr << "--timeslice-extension is not supported by condition-variable "
-                 "workloads; use --timeslice-extension off\n";
     std::exit(1);
   }
   return cfg;
@@ -599,8 +569,7 @@ void PrintLatencyStats(const char *prefix, const LatencyStats &stats) {
 template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &cfg) {
   static_assert(locks_bench::LockBench<LockBenchT>);
 
-  LockBenchT lock_bench(
-      locks_bench::LockBenchOptions{cfg.timeslice_extension_mode});
+  LockBenchT lock_bench;
   std::atomic<uint64_t> total_ops{0};
   std::atomic<uint64_t> total_lock_hold_ns{0};
   std::atomic<uint64_t> total_lock_hold_samples{0};
@@ -618,8 +587,6 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
 
   for (int t = 0; t < cfg.threads; ++t) {
     workers.emplace_back([&, thread_index = t]() {
-      lock_bench.prepare_thread();
-
       uint64_t local_lock_hold_ns = 0;
       uint64_t local_lock_hold_samples = 0;
       static thread_local uint64_t local_ops = 0;
@@ -632,9 +599,9 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
 
       if (cfg.warmup_duration_ms > 0) {
         while (!warmup_stop.load(std::memory_order_acquire)) {
-          auto guard_state = lock_bench.lock();
+          lock_bench.lock();
           BurnIters(cfg.critical_ns, cfg.burn_calibration);
-          lock_bench.unlock(guard_state);
+          lock_bench.unlock();
           BurnIters(cfg.outside_ns, cfg.burn_calibration);
         }
       }
@@ -658,7 +625,7 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
         Clock::time_point after_lock;
         Clock::time_point before_unlock;
 
-        auto guard_state = lock_bench.lock();
+        lock_bench.lock();
         if (do_timing_sample) {
           after_lock = Clock::now();
         }
@@ -666,7 +633,7 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
         if (do_timing_sample) {
           before_unlock = Clock::now();
         }
-        lock_bench.unlock(guard_state);
+        lock_bench.unlock();
 
         if (do_timing_sample) {
           const auto hold_ns =
@@ -779,10 +746,8 @@ template <typename LockBenchT> int RunSingleLockBenchmarkForLock(const Config &c
 template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg) {
   static_assert(locks_bench::LockBench<LockBenchT>);
 
-  LockBenchT group_a_lock(
-      locks_bench::LockBenchOptions{cfg.timeslice_extension_mode});
-  LockBenchT group_b_lock(
-      locks_bench::LockBenchOptions{cfg.timeslice_extension_mode});
+  LockBenchT group_a_lock;
+  LockBenchT group_b_lock;
   const int group_threads = cfg.threads / 2;
   const WorkloadTiming group_a_timing{cfg.group_a_critical_ns,
                                       cfg.group_a_outside_ns};
@@ -805,8 +770,6 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
                          GroupCounters &counters, int first_thread_index) {
     for (int i = 0; i < group_threads; ++i) {
       workers.emplace_back([&, timing, thread_index = first_thread_index + i]() {
-        lock_bench.prepare_thread();
-
         uint64_t local_lock_hold_ns = 0;
         uint64_t local_lock_hold_samples = 0;
         static thread_local uint64_t local_ops = 0;
@@ -819,9 +782,9 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
 
         if (cfg.warmup_duration_ms > 0) {
           while (!warmup_stop.load(std::memory_order_acquire)) {
-            auto guard_state = lock_bench.lock();
+            lock_bench.lock();
             BurnIters(timing.critical_ns, cfg.burn_calibration);
-            lock_bench.unlock(guard_state);
+            lock_bench.unlock();
             BurnIters(timing.outside_ns, cfg.burn_calibration);
           }
         }
@@ -845,7 +808,7 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
           Clock::time_point after_lock;
           Clock::time_point before_unlock;
 
-          auto guard_state = lock_bench.lock();
+          lock_bench.lock();
           if (do_timing_sample) {
             after_lock = Clock::now();
           }
@@ -853,7 +816,7 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
           if (do_timing_sample) {
             before_unlock = Clock::now();
           }
-          lock_bench.unlock(guard_state);
+          lock_bench.unlock();
 
           if (do_timing_sample) {
             const auto hold_ns =
@@ -979,9 +942,8 @@ template <typename LockBenchT> int RunTwoLockBenchmarkForLock(const Config &cfg)
 // Threads form a ring: the token owner burns the critical section, hands the
 // token to the next thread and signals that thread's condition variable, so
 // every operation is a wait -> signal handoff over one shared mutex.
-template <typename CondBenchT>
 int RunCvPingPongBenchmarkForCond(const Config &cfg) {
-  static_assert(locks_bench::CondBench<CondBenchT>);
+  using CondBenchT = locks_bench::PthreadCondBench;
 
   const size_t thread_count = static_cast<size_t>(cfg.threads);
   CondBenchT cv(thread_count);
@@ -1112,9 +1074,8 @@ int RunCvPingPongBenchmarkForCond(const Config &cfg) {
 // One coordinator bumps a generation counter and broadcasts on a fixed period;
 // every waiter must re-acquire the shared mutex, observe the new generation and
 // go back to waiting.
-template <typename CondBenchT>
 int RunCvBroadcastBenchmarkForCond(const Config &cfg) {
-  static_assert(locks_bench::CondBench<CondBenchT>);
+  using CondBenchT = locks_bench::PthreadCondBench;
 
   constexpr size_t kWaiterCond = 0;
   constexpr size_t kCoordinatorCond = 1;
@@ -1314,51 +1275,21 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  if (cfg.timeslice_extension_mode !=
-      locks_bench::TimesliceExtensionMode::kOff) {
-    const auto status = locks_bench::CurrentThreadTimesliceExtensionStatus(
-        cfg.timeslice_extension_mode);
-    if (!status.enabled) {
-      if (cfg.timeslice_extension_mode ==
-          locks_bench::TimesliceExtensionMode::kRequire) {
-        std::cerr << "timeslice extension is required but unavailable";
-        if (status.reason != nullptr) {
-          std::cerr << ": " << status.reason;
-        }
-        if (status.error_number != 0) {
-          std::cerr << " (errno=" << status.error_number << ", "
-                    << std::strerror(status.error_number) << ")";
-        }
-        std::cerr << "\n";
-        return 1;
-      }
-      if (status.reason != nullptr) {
-        std::cerr << "Warning: timeslice extension is unavailable; "
-                     "continuing without it: "
-                  << status.reason;
-        if (status.error_number != 0) {
-          std::cerr << " (errno=" << status.error_number << ", "
-                    << std::strerror(status.error_number) << ")";
-        }
-        std::cerr << "\n";
-      }
-    }
-  }
-
   if (IsCondWorkload(cfg.workload)) {
-    return locks_bench::DispatchByCondLockKind(
-        cfg.lock_kind, [&]<typename CondBenchT>() {
-          if (cfg.workload == WorkloadMode::kCvBroadcast) {
-            return RunCvBroadcastBenchmarkForCond<CondBenchT>(cfg);
-          }
-          return RunCvPingPongBenchmarkForCond<CondBenchT>(cfg);
-        });
+    if (cfg.workload == WorkloadMode::kCvBroadcast) {
+      return RunCvBroadcastBenchmarkForCond(cfg);
+    }
+    return RunCvPingPongBenchmarkForCond(cfg);
   }
 
-  return locks_bench::DispatchByLockKind(cfg.lock_kind, [&]<typename LockBenchT>() {
+  if (cfg.lock_kind == locks_bench::LockKind::kPthreadSpinlock) {
     if (cfg.workload == WorkloadMode::kTwoLock) {
-      return RunTwoLockBenchmarkForLock<LockBenchT>(cfg);
+      return RunTwoLockBenchmarkForLock<locks_bench::PthreadSpinLockBench>(cfg);
     }
-    return RunSingleLockBenchmarkForLock<LockBenchT>(cfg);
-  });
+    return RunSingleLockBenchmarkForLock<locks_bench::PthreadSpinLockBench>(cfg);
+  }
+  if (cfg.workload == WorkloadMode::kTwoLock) {
+    return RunTwoLockBenchmarkForLock<locks_bench::PthreadMutexLockBench>(cfg);
+  }
+  return RunSingleLockBenchmarkForLock<locks_bench::PthreadMutexLockBench>(cfg);
 }

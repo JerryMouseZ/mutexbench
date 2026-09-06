@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MUTEXBENCH_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="$(cd -- "${MUTEXBENCH_DIR}/../.." && pwd)"
+LITL_DIR="${LITL_DIR:-$PROJECT_ROOT/third_party/litl}"
 
 usage() {
   cat <<'EOF'
@@ -27,8 +29,14 @@ Options:
   --duration-ms N              measurement duration in ms (default: 1000)
   --warmup-duration-ms N       warmup duration in ms (default: 0)
   --timing-sample-stride N     timing sample stride (default: 8)
-  --lock-kind K                lock kind: mutex|pthread_spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh (default: mutex)
-  --timeslice-extension M      off|auto|require (default: off; ignored for *-tse lock kinds)
+  --lock-kind K                mutex (default) or pthread_spinlock; mutex measures a plain
+                               pthread_mutex_t, pthread_spinlock is the non-interposed control
+  --litl-lock NAME             Run the benchmark under a LiTL launcher so NAME's algorithm is
+                               interposed on pthread_mutex_*. NAME is a LiTL library name
+                               (mbmcs_original, mcs_spinlock, mcsaccordin_original, ...); a bare
+                               name also resolves with an _original suffix. An absolute path to a
+                               launcher script is accepted too. Default: none (plain pthread mutex)
+  --litl-dir DIR               LiTL checkout holding lib<NAME>.sh (default: <repo>/third_party/litl)
   --repeats N                  runs per parameter point (default: 3)
   --profile                    Record perf.data for each run and keep it beside raw.csv
   --sample-bpf                 Record per-run accordin BPF sampler CSV beside raw.csv
@@ -64,7 +72,8 @@ duration_ms="2000"
 warmup_duration_ms="50"
 timing_sample_stride="8"
 lock_kind="mutex"
-timeslice_extension="off"
+litl_lock=""
+litl_dir="$LITL_DIR"
 repeats="3"
 profiling_enabled="0"
 sample_bpf_enabled="0"
@@ -122,8 +131,12 @@ while [[ $# -gt 0 ]]; do
       lock_kind="${2:-}"
       shift 2
       ;;
-    --timeslice-extension)
-      timeslice_extension="${2:-}"
+    --litl-lock)
+      litl_lock="${2:-}"
+      shift 2
+      ;;
+    --litl-dir)
+      litl_dir="${2:-}"
       shift 2
       ;;
     --repeats)
@@ -337,28 +350,17 @@ if ! is_uint "$timing_sample_stride" || [[ "$timing_sample_stride" -eq 0 ]]; the
   exit 1
 fi
 case "$lock_kind" in
-  mutex|pthread_spinlock|pthread-spinlock|reciprocating|hapax|mcs|mcs_accordin_direct|mcs-tas|mcs-tas-tse|mcs_tas_accordin_direct|mcstas-next|mcstas-next-tse|twa|clh)
+  mutex|pthread_spinlock|pthread-spinlock)
     ;;
   *)
-    echo "--lock-kind must be one of: mutex, pthread_spinlock, reciprocating, hapax, mcs, mcs_accordin_direct, mcs-tas, mcs-tas-tse, mcs_tas_accordin_direct, mcstas-next, mcstas-next-tse, twa, clh" >&2
+    echo "--lock-kind must be mutex or pthread_spinlock; select a lock algorithm with --litl-lock" >&2
     exit 1
     ;;
 esac
-case "$timeslice_extension" in
-  off|auto|require)
-    ;;
-  *)
-    echo "--timeslice-extension must be one of: off, auto, require" >&2
-    exit 1
-    ;;
-esac
-
-lock_uses_builtin_timeslice_extension="0"
-case "$lock_kind" in
-  mcs-tas-tse|mcstas-next-tse)
-    lock_uses_builtin_timeslice_extension="1"
-    ;;
-esac
+if [[ -n "$litl_lock" && "$lock_kind" != "mutex" ]]; then
+  echo "--litl-lock only interposes pthread_mutex_*; use --lock-kind mutex" >&2
+  exit 1
+fi
 if ! is_uint "$repeats" || [[ "$repeats" -eq 0 ]]; then
   echo "--repeats must be an integer > 0" >&2
   exit 1
@@ -378,6 +380,29 @@ parse_csv_values "$critical_iters_csv" "--critical-ns" "yes" critical_iters
 parse_csv_values "$outside_iters_csv" "--outside-ns" "yes" outside_iters
 
 binary="$(resolve_executable_path "$binary" "$MUTEXBENCH_DIR")"
+declare -a litl_launcher=()
+if [[ -n "$litl_lock" ]]; then
+  litl_launcher_path=""
+  case "$litl_lock" in
+    */*)
+      litl_launcher_path="$(resolve_input_file_path "$litl_lock" "$MUTEXBENCH_DIR")"
+      ;;
+    *)
+      for candidate in "$litl_dir/lib${litl_lock}.sh" "$litl_dir/lib${litl_lock}_original.sh"; do
+        if [[ -f "$candidate" ]]; then
+          litl_launcher_path="$candidate"
+          break
+        fi
+      done
+      ;;
+  esac
+  if [[ -z "$litl_launcher_path" || ! -f "$litl_launcher_path" ]]; then
+    echo "LiTL launcher not found for --litl-lock $litl_lock (looked under $litl_dir)" >&2
+    echo "Build it first, e.g. make -C $litl_dir ALGORITHMS=\"${litl_lock}\" all" >&2
+    exit 1
+  fi
+  litl_launcher=(bash "$litl_launcher_path")
+fi
 if [[ -n "$output_root" ]]; then
   output_root="$(resolve_output_path "$output_root" "$MUTEXBENCH_DIR")"
   if [[ "$output_raw_explicit" != "1" ]]; then
@@ -526,9 +551,10 @@ for t in "${threads[@]}"; do
     for o in "${outside_iters[@]}"; do
       for ((r = 1; r <= repeats; ++r)); do
         current_run=$((current_run + 1))
-        echo "[${current_run}/${total_runs}] lock_kind=${lock_kind} threads=${t} critical=${c} outside=${o} repeat=${r} duration_ms=${duration_ms} warmup_duration_ms=${warmup_duration_ms}" >&2
+        echo "[${current_run}/${total_runs}] lock_kind=${lock_kind}${litl_lock:+ litl_lock=${litl_lock}} threads=${t} critical=${c} outside=${o} repeat=${r} duration_ms=${duration_ms} warmup_duration_ms=${warmup_duration_ms}" >&2
 
         bench_cmd=(
+          "${litl_launcher[@]}"
           "$binary"
           --threads "$t"
           --lock-kind "$lock_kind"
@@ -538,9 +564,6 @@ for t in "${threads[@]}"; do
           --outside-ns "$o"
           --timing-sample-stride "$timing_sample_stride"
         )
-        if [[ "$lock_uses_builtin_timeslice_extension" != "1" ]]; then
-          bench_cmd+=( --timeslice-extension "$timeslice_extension" )
-        fi
         if [[ -n "$calibration_config" ]]; then
           bench_cmd+=( --calibration-config "$calibration_config" )
         fi
